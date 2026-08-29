@@ -1,12 +1,20 @@
-"""Provider 抽象层的单元测试:mock 决策、结构化 DMPlan 解析、内联掷骰。"""
+"""Provider 抽象层单元测试:mock 氛围兜底、结构化 DMPlan 解析、LLM 实时判决的引擎裁决。"""
 
 from __future__ import annotations
 
+import asyncio
+
 from app.dice import normalize_skill
 from app.gameplay import start_session
-from app.models import DMPlan
+from app.models import DMPlan, SkillProposal
 from app.persistence import new_id
-from app.providers import MockLLMProvider, get_image_provider, get_llm_provider, parse_dm_plan
+from app.providers import (
+    MockLLMProvider,
+    get_image_provider,
+    get_llm_provider,
+    parse_dm_plan,
+    propose_or_resolve,
+)
 
 
 def test_default_providers_are_mock(monkeypatch):
@@ -18,29 +26,37 @@ def test_default_providers_are_mock(monkeypatch):
     assert get_image_provider().name == "mock"
 
 
-def test_mock_plan_shortcut_advance():
+class _FakeDM:
+    """替身 DM:把预置的 DMPlan 原样交给引擎,用于确定性测引擎裁决,不再依赖任何离线剧情。"""
+
+    name = "fake"
+
+    def __init__(self, plan: DMPlan):
+        self._plan = plan
+
+    def plan(self, session, player_text: str) -> DMPlan:
+        return self._plan
+
+
+def test_mock_plan_is_atmospheric_fallback():
+    """Mock 只作离线氛围兜底:无预写剧情文本、无检定建议、无场景跳转。"""
     sess = start_session(new_id())
-    plan = MockLLMProvider().plan(sess, "推开7号房的门")
+    plan = MockLLMProvider().plan(sess, "我推开7号房的门")
     assert isinstance(plan, DMPlan)
-    assert plan.advance_scene == "room7"
-
-
-def test_mock_plan_hook_inspect_proposes_check():
-    sess = start_session(new_id())
-    plan = MockLLMProvider().plan(sess, "我俯身检查床底")
-    # 当前场景是 prologue,inspect hook 未附带检定
     assert plan.narrative
-
-
-def test_mock_plan_fallback_when_no_intent():
-    sess = start_session(new_id())
-    plan = MockLLMProvider().plan(sess, "今天天气不错呢")
-    assert plan.narrative
+    assert "7号房" not in plan.narrative
     assert plan.check is None
+    assert plan.advance_scene is None
+
+
+def test_mock_plan_never_scripts_hook():
+    sess = start_session(new_id())
+    plan = MockLLMProvider().plan(sess, "我俯身检查床底的白影")
+    assert plan.check is None and plan.advance_scene is None
 
 
 def test_parse_dm_plan_valid_json():
-    raw = '{"narrative": "你发现床底有个白影。", "check": {"skill": "侦查", "reason": "雾太浓", "dc": 11}, "advance_scene": null, "triggers": ["x"]}'
+    raw = '{"narrative": "你发现床底有个白影。", "check": {"skill": "侦查", "reason": "雾太浓,想看清", "dc": 11}, "advance_scene": null, "triggers": ["x"]}'
     plan = parse_dm_plan(raw)
     assert plan.narrative == "你发现床底有个白影。"
     assert plan.check is not None
@@ -55,33 +71,76 @@ def test_parse_dm_plan_fenced_json():
     assert plan.check is None
 
 
+def test_parse_dm_plan_invented_scene_rejected():
+    """引擎防御:LLM 幻觉出未登记的场景 id 会被丢弃,只保留叙述。"""
+    raw = '{"narrative": "你走进一个不存在的空间。", "advance_scene": "ghost-realm", "check": null, "triggers": []}'
+    plan = parse_dm_plan(raw)
+    assert plan.advance_scene is None
+    assert plan.narrative == "你走进一个不存在的空间。"
+
+
 def test_parse_dm_plan_garbage_falls_back():
     plan = parse_dm_plan("这是一段完全不是JSON的叙述文本")
     assert plan.narrative == "这是一段完全不是JSON的叙述文本"
 
 
-def test_propose_or_resolve_check_advance(monkeypatch):
-    """在 room7 场景下 inspect 检定成功 → 依据 advance_on 推进到 basement。"""
+def test_propose_or_resolve_advance_whitelisted_branch(monkeypatch):
+    """LLM 判定了大分支(declared):引擎校验白名单后推进,并注入分支入场白。"""
 
     async def run():
-        from app import providers as p
+        import app.providers as p
 
         sess = start_session(new_id())
-        from app.gameplay import advance_scene
-
-        advance_scene(sess, "room7")
-        # 直接调用真实 mock 决策:room7 的 inspect hook 建议「侦查」检定
-        res = await p.propose_or_resolve(sess, "我俯身检查床底的白影")
+        plan = DMPlan(narrative="铁门在你身后合拢。", advance_scene="hallway", triggers=["branch"])
+        monkeypatch.setattr(p, "get_llm_provider", lambda: _FakeDM(plan))
+        res = await propose_or_resolve(sess, "我推开主楼大门走进走廊")
         return res, sess
 
-    import asyncio
+    res, sess = asyncio.run(run())
+    assert res["advanced"] is True
+    assert res["advance_dm_text"]
+    assert sess.state.scene_id == "hallway"
+    assert any("推进" in e for e in sess.state.events)
+
+
+def test_propose_or_resolve_blocks_undeclared_advance(monkeypatch):
+    """玩家想跳的不是已声明的大分支 → 引擎拒绝推进,剧情仍由 DM 叙述裁决。"""
+
+    async def run():
+        import app.providers as p
+
+        sess = start_session(new_id())
+        plan = DMPlan(narrative="雾里没有那样的门。", advance_scene="end" if False else "basement")
+        monkeypatch.setattr(p, "get_llm_provider", lambda: _FakeDM(plan))
+        res = await propose_or_resolve(sess, "我直接跑去地下室")
+        return res, sess
 
     res, sess = asyncio.run(run())
-    check = res.get("check")
-    # 检定成功时才推进;失败时不推进 —— 两者都验证引擎行为一致
-    assert (res["advanced"] is True and sess.state.scene_id == "basement") or (
-        res["advanced"] is False and sess.state.scene_id == "room7"
-    )
-    if check is not None:
-        assert check.skill == "侦查"
-        assert check.dc > 0
+    # prologue 声明的分支是 hallway/room7 → basement 未声明,推进被拦
+    assert res["advanced"] is False
+    assert sess.state.scene_id == "prologue"
+
+
+def test_propose_or_resolve_check_numeric_adjudication(monkeypatch):
+    """LLM 建议检定 → 引擎统一 DC 裁决;成功与否都不由引擎强行推剧情。"""
+
+    async def run():
+        import app.providers as p
+
+        sess = start_session(new_id())
+        plan = DMPlan(
+            narrative="雾太浓,你眯起眼睛想看清帘子。",
+            check=SkillProposal(skill="侦查", reason="雾太浓", dc=10),
+        )
+        monkeypatch.setattr(p, "get_llm_provider", lambda: _FakeDM(plan))
+        res = await propose_or_resolve(sess, "我观察帘子后面")
+        return res, sess
+
+    res, sess = asyncio.run(run())
+    check = res["check"]
+    assert check is not None
+    assert check.skill == "侦查"
+    assert check.dc == 10
+    assert check.success is True or check.success is False
+    assert res["advanced"] is False
+    assert sess.stats["checks"] == 1

@@ -1,11 +1,13 @@
-"""Provider 抽象层:LLM 剧本主持 + 生图卡片 + 剧情推进决策。
+"""Provider 抽象层：LLM 实时剧本主持 + 生图卡片 + 剧情分支判决。
 
-两种实现:
-- MockLLMProvider     : 离线模拟(场景 hooks + 应急模板),无需任何 API Key,用于 CI / 冒烟 / 答辩演示。
-- DeepSeekLLMProvider : OpenAI 兼容接口(DeepSeek 官方 / 硅基流动 /deepseek-ai/DeepSeek-V4-Flash),
-                        返回结构化 DMPlan(Pydantic 数值检定契约);调用失败自动降级 mock(防御性编程)。
-- MockImageProvider   : 本地 SVG 生成场景卡 / NPC 头像(data URL)。
-- RemoteImageProvider : 远程图片生成 API(如硅基流动 Kolors),异步生成 + 磁盘缓存,失败回退 mock。
+架构：
+- BaseLLMProvider        ：统一决策入口，返回结构化 DMPlan（Pydantic 数值检定契约）。
+- DeepSeekLLMProvider    ：OpenAI 兼容接口（DeepSeek 官方 / 硅基流动 deepseek-ai/DeepSeek-V4-Flash），
+                           由模型按玩家自由指令**实时判决**剧情推进与检定建议；调用失败自动降级 mock。
+- MockLLMProvider        ：离线保底。只做氛围兜底叙述，**不预写任何剧情台词/推进判断**——
+                           保证无 Key 时全链路可跑，但真正的剧情演进必须由真实 LLM 完成。
+- MockImageProvider      ：本地 SVG 生成场景卡 / NPC 画像（data URL）。
+- RemoteImageProvider    ：远程生图 API，异步生成 + 磁盘缓存，失败回退 mock。
 """
 
 from __future__ import annotations
@@ -36,11 +38,11 @@ class BaseLLMProvider:
     name = "base"
 
     def plan(self, session: GameSession, player_text: str) -> DMPlan:
-        """决策入口:返回结构化 DMPlan。真实实现为 LLM 调用 + JSON 契约解析。"""
+        """决策入口：返回结构化 DMPlan。真实实现为 LLM 调用 + JSON 契约解析。"""
         raise NotImplementedError
 
     async def stream_text(self, full_text: str, delay: float = 0.024):
-        """把完整文本切成小块异步流出(SSE token 流)。"""
+        """把完整文本切成小块异步流出（SSE token 流）。"""
         chunk_size = random.randint(5, 9)
         for i in range(0, len(full_text), chunk_size):
             yield full_text[i : i + chunk_size]
@@ -48,51 +50,23 @@ class BaseLLMProvider:
 
 
 class MockLLMProvider(BaseLLMProvider):
+    """离线保底 DM：只给氛围叙述，不做剧情预判/场景跳转/检定建议。"""
+
     name = "mock"
 
-    _FALLBACK = [
-        "你环顾四周,雾气在昏黄的灯光里缓慢游动。这里的一切都让人觉得,有什么事被刻意藏起来了。",
-        "你说的这句话在空旷的走廊里弹了回来,没有回应。也许该去检查一下【7号房】,或者撬开那扇门。",
-        "空气里浮着潮湿的霉味。你感觉到一种被注视的重量,像有人躲在雾里,安静地等着你。",
-        "你站在原地想了想。想获得更多信息,不妨用 /check 做一次检定,或者换个更具体的行动。",
+    _ATM = [
+        "雾气在昏黄的灯光里缓慢游动。你感到这里的每一寸都被刻意藏起了什么——继续你的行动，剩下的交给雾和你自己。",
+        "你的举动在空旷的静默里落了下去。想推进真相，可以描述得更具体：观察什么、问谁、打开哪扇门。",
+        "空气里浮着潮湿的霉味。你感觉到一种被注视的重量，像有什么东西在雾里安静地等你下一步动作。",
+        "你站在原地想了想。此刻没有绝对的答案——你的选择会决定雾里故事的走向。",
     ]
 
-    def _scene(self, session: GameSession) -> dict:
-        return SCENARIO["scenes"].get(session.state.scene_id) or SCENARIO["scenes"]["prologue"]
-
     def plan(self, session: GameSession, player_text: str) -> DMPlan:
-        scene = self._scene(session)
-        intent = detect_intent(player_text)
-        shortcut = _shortcut_scene(player_text)
-
-        if shortcut and shortcut != "end" and session.state.scene_id != shortcut:
-            sc = SCENARIO["scenes"][shortcut]
-            return DMPlan(narrative=sc["entry"], advance_scene=shortcut, triggers=["shortcut"])
-
-        if intent in scene.get("hooks", {}):
-            hook = scene["hooks"][intent]
-            if isinstance(hook, tuple):
-                text, skill = hook
-            else:
-                text, skill = hook, None
-            if skill:
-                return DMPlan(
-                    narrative=text,
-                    check=SkillProposal(
-                        skill=skill,
-                        reason=f"在「{scene['name']}」中该行动存在不确定性,建议检定。",
-                    ),
-                    triggers=["hook:check"],
-                )
-            return DMPlan(narrative=text, triggers=[f"hook:{intent}"])
-
-        if player_text.replace(" ", "") in ("开始冒险", "好", "进去", "推开门", "继续"):
-            return DMPlan(narrative=scene.get("entry", "门应声而开。"), triggers=["continue"])
-        return DMPlan(narrative=random.choice(self._FALLBACK), triggers=["fallback"])
+        return DMPlan(narrative=random.choice(self._ATM), triggers=["ai_fallback"])
 
 
 def parse_dm_plan(raw: str, fallback_narrative: str = "") -> DMPlan:
-    """把 LLM 返回文本解析为 DMPlan;容错处理 markdown 代码块 / 尾注 / 非法字段。"""
+    """把 LLM 返回文本解析为 DMPlan；容错处理 markdown 代码块 / 尾注 / 非法字段。"""
     cleaned = raw.strip()
     cleaned = re_strip_fence(cleaned)
     try:
@@ -147,7 +121,7 @@ class DeepSeekLLMProvider(BaseLLMProvider):
         self.timeout = config.LLM_TIMEOUT
         self._fallback = MockLLMProvider()
 
-    # -- 同步 HTTP 调用,外层用 asyncio.to_thread 包住,避免阻塞事件循环 --
+    # -- 同步 HTTP 调用，外层用 asyncio.to_thread 包住，避免阻塞事件循环 --
     def _call_chat(self, messages: list[dict[str, str]]) -> str:
         payload = {
             "model": self.model,
@@ -168,14 +142,14 @@ class DeepSeekLLMProvider(BaseLLMProvider):
             return data["choices"][0]["message"]["content"]
 
     async def plan(self, session: GameSession, player_text: str) -> DMPlan:
-        """真实 LLM 决策 + Pydantic 结构化检定契约;失败自动降级 mock。"""
+        """真实 LLM 实时判决 + Pydantic 结构化检定契约；失败自动降级 mock。"""
         try:
             ctx = memory.build_context(session)
-            ctx.append({"role": "user", "content": player_text[:config.MAX_INPUT_LENGTH]})
+            ctx.append({"role": "user", "content": player_text[: config.MAX_INPUT_LENGTH]})
             raw = await asyncio.to_thread(self._call_chat, ctx)
             return parse_dm_plan(raw, fallback_narrative=player_text and "……")
         except Exception:
-            # 防御性降级:任何网络/解析失败都回退到离线 DM,保证流程不中断
+            # 防御性降级：任何网络/解析失败都回退到离线 DM，保证流程不中断
             return self._fallback.plan(session, player_text)
 
     async def stream_text(self, full_text: str, delay: float = 0.02):
@@ -185,32 +159,23 @@ class DeepSeekLLMProvider(BaseLLMProvider):
             await asyncio.sleep(delay)
 
 
-def detect_intent(text: str) -> str | None:
-    """粗粒度识别自由行动的意图,供 mock DM 定向回应。"""
-    for kw in ["检查", "查看", "搜索", "侦查", "观察", "仔细", "翻看", "撬", "找", "环顾", "俯身"]:
-        if kw in text:
-            return "inspect"
-    for kw in ["攻击", "挥拳", "搏斗", "砍", "杀", "打", "踹"]:
-        if kw in text:
-            return "combat"
-    for kw in ["逃跑", "跑", "冲出去", "逃走", "离开", "撤"]:
-        if kw in text:
-            return "flee"
-    for kw in ["说话", "交谈", "询问", "对话", "交涉", "问", "说", "打招呼"]:
-        if kw in text:
-            return "talk"
-    return None
-
-
-def _shortcut_scene(text: str) -> str | None:
-    for kw, sc in SCENARIO["scene_shortcut"].items():
-        if kw in text:
-            return sc
-    return None
+def _can_advance(session: GameSession, target: str) -> bool:
+    """白名单校验：只允许跳到「当前大剧情分支」上声明过的下一分支。"""
+    current = session.state.scene_id
+    trunk = SCENARIO["scenes"]
+    if target == current or target not in trunk:
+        return False
+    if trunk.get(current, {}).get("is_terminal"):
+        return False
+    declared = {b["target"] for b in SCENARIO["branches"].get(current, [])}
+    return target in declared
 
 
 async def propose_or_resolve(session: GameSession, player_text: str) -> dict:
-    """完整决策流:生成叙述 + 决定是否检定 + 检定结果 + 场景推进。"""
+    """完整决策流：DM 实时叙述 + 是否建议检定 + 数值裁决 + 大分支推进。
+
+    引擎只负责「骰子裁决」与「白名单推进」；剧情方向完全由 LLM 当轮判决。
+    """
     from .gameplay import run_check
 
     provider = get_llm_provider()
@@ -227,27 +192,18 @@ async def propose_or_resolve(session: GameSession, player_text: str) -> dict:
     if plan.check is None and not plan.advance_scene:
         _maybe_inline_roll(session, player_text)
 
-    # 1) 直接推进(LLM 明确给出目标场景)
-    if plan.advance_scene:
-        sc = SCENARIO["scenes"][plan.advance_scene]
+    # 1) LLM 明确指向某个大剧情分支（引擎做白名单校验后推进）
+    if plan.advance_scene and _can_advance(session, plan.advance_scene):
+        sess_scene = SCENARIO["scenes"][plan.advance_scene]
         session.state.scene_id = plan.advance_scene
-        session.state.events.append(f"推进到 {sc['name']}")
+        session.state.events.append(f"推进到「{sess_scene['name']}」大分支")
         result["advanced"] = True
-        result["advance_dm_text"] = sc.get("entry", "")
-        return result
+        result["advance_dm_text"] = sess_scene.get("entry", "")
 
-    # 2) 附带检定:引擎负责「结构化数值裁决」,成功后按剧本链推进
+    # 2) LLM 建议检定 → 引擎负责结构化数值裁决（成功与否都不由引擎强行推剧情）
     if plan.check:
         res = run_check(session, plan.check.skill, dc_override=plan.check.dc)
         result["check"] = res
-        adv_on = SCENARIO["advance_on"].get(session.state.scene_id, [])
-        nxt = SCENARIO["scene_chain"].get(session.state.scene_id)
-        if res.success and res.skill in adv_on and nxt:
-            sc = SCENARIO["scenes"][nxt]
-            session.state.scene_id = nxt
-            session.state.events.append(f"推进到 {sc['name']}")
-            result["advanced"] = True
-            result["advance_dm_text"] = sc.get("entry", "")
     return result
 
 
@@ -255,7 +211,9 @@ def _maybe_inline_roll(session: GameSession, text: str) -> bool:
     import re
     import uuid
 
-    m = re.search(r"(\\d*)[dD](\\d+)([+-]\\s*\\d+)?", text)
+    from .models import Message
+
+    m = re.search(r"(\d*)[dD](\d+)([+-]\s*\d+)?", text)
     if not m:
         return False
     count = int(m.group(1) or 1)
@@ -265,8 +223,6 @@ def _maybe_inline_roll(session: GameSession, text: str) -> bool:
         return False
     roll = roll_expression(f"{count}d{sides}{mod:+d}")
     session.stats["rolls"] += 1
-    from .models import Message
-
     session.messages.append(
         Message(
             id=f"roll-{uuid.uuid4().hex[:8]}",
@@ -305,7 +261,8 @@ class MockImageProvider(BaseImageProvider):
 
 def _image_prompt_scene(scene_id: str) -> str:
     sc = SCENARIO["scenes"].get(scene_id, {})
-    return f"{sc.get('name', scene_id)},{sc.get('desc', '雾中孤儿院,悬疑微恐怖氛围')}. cinematic misty lighting, dark mystery game art style, no text"
+    return f"{sc.get('name', scene_id)},{sc.get('desc', '悬疑微恐怖氛围')}. cinematic misty lighting, dark mystery game art style, no text"
+
 
 def _image_prompt_npc(npc_id: str) -> str:
     npc = SCENARIO["npcs"].get(npc_id, {})
@@ -313,7 +270,7 @@ def _image_prompt_npc(npc_id: str) -> str:
 
 
 class RemoteImageProvider(BaseImageProvider):
-    """远程生图:磁盘缓存 + 异步生成,失败回退 mock,保证链路不中断。"""
+    """远程生图：磁盘缓存 + 异步生成，失败回退 mock，保证链路不中断。"""
 
     name = "remote"
 
@@ -348,7 +305,7 @@ class RemoteImageProvider(BaseImageProvider):
         return (self.cache_dir / f"{key}.png").exists() and (self.cache_dir / f"{key}.png").stat().st_size > 0
 
     def generate(self, key: str, prompt: str) -> bool:
-        """同步生成并落盘缓存(png)。结构:{images:[{url}], choices:[{url}], data:[{url}]} 兼容多形态。"""
+        """同步生成并落盘缓存（png）。结构：{images:[{url}], choices:[{url}], data:[{url}]} 兼容多形态。"""
         if self._cached(key):
             return True
         try:

@@ -67,7 +67,9 @@ async def _public_image(entity: str) -> str:
         return (
             img.scene_card(entity)
             if entity in SCENARIO["scenes"]
-            else img.npc_portrait(entity) if entity in SCENARIO["npcs"] else ""
+            else img.npc_portrait(entity)
+            if entity in SCENARIO["npcs"]
+            else ""
         )
     if entity in SCENARIO["scenes"]:
         return await asyncio.to_thread(img.scene_card, entity)
@@ -77,10 +79,11 @@ async def _public_image(entity: str) -> str:
 async def _public_session(sess) -> dict:
     """给前端用的会话快照,去掉超长历史,附上场景卡/NPC 画像(异步取图)。"""
     scene_id = sess.state.scene_id
+    scene_name = SCENARIO["scenes"].get(scene_id, {}).get("name", scene_id)
     return {
         "id": sess.id,
         "title": sess.title,
-        "scene": {"id": scene_id, "name": sess.state.scene_id, "image": await _public_image(scene_id)},
+        "scene": {"id": scene_id, "name": scene_name, "image": await _public_image(scene_id)},
         "state": {
             "player": sess.state.player.name,
             "hp": sess.state.player.hp,
@@ -206,25 +209,30 @@ async def scenario_meta():
         "genre": SCENARIO["genre"],
         "skills": SCENARIO["skills"],
         "npcs": [{"id": k, "name": v["name"], "title": v.get("title", "")} for k, v in SCENARIO["npcs"].items()],
-        "scenes": [{"id": s["id"], "name": s["name"], "terminal": bool(s.get("is_terminal"))} for s in SCENARIO["scenes"].values()],
+        "scenes": [
+            {"id": s["id"], "name": s["name"], "terminal": bool(s.get("is_terminal"))}
+            for s in SCENARIO["scenes"].values()
+        ],
     }
 
 
 @app.get("/api/scenario/branches")
 async def scenario_branches():
-    """剧情分支树(顶点 = 场景,边 = 推进链/捷径),供前端可视化。"""
+    """大剧情分支树(顶点 = 大分支 zone,边 = 声明后的大分支走向),供前端可视化。"""
     nodes = [
         {
             "id": s["id"],
             "name": s["name"],
             "terminal": bool(s.get("is_terminal")),
-            "advance_on": SCENARIO["advance_on"].get(s["id"], []),
+            "start": bool(s.get("is_start")),
         }
         for s in SCENARIO["scenes"].values()
     ]
-    edges = [{"from": k, "to": v, "kind": "chain"} for k, v in SCENARIO["scene_chain"].items()]
-    for kw, sc in SCENARIO["scene_shortcut"].items():
-        edges.append({"from": "prologue", "to": sc, "kind": "shortcut", "label": kw})
+    edges = [
+        {"from": zid, "to": b["target"], "kind": "branch", "label": b["label"]}
+        for zid, branches in SCENARIO["branches"].items()
+        for b in branches
+    ]
     return {"nodes": nodes, "edges": edges, "order": SCENARIO["scene_order"]}
 
 
@@ -323,7 +331,12 @@ async def chat(session_id: str, payload: dict):
                 {"id": f"story-{persistence.new_id()}", "kind": "story", "role": "dm", "content": check.narrative}
             )
             new_messages.append(
-                {"id": f"roll-{persistence.new_id()}", "kind": "roll", "role": "dice", "content": roll_summary(check.roll)}
+                {
+                    "id": f"roll-{persistence.new_id()}",
+                    "kind": "roll",
+                    "role": "dice",
+                    "content": roll_summary(check.roll),
+                }
             )
             sess.messages = _append_messages(sess, new_messages)
 
@@ -348,7 +361,9 @@ async def chat(session_id: str, payload: dict):
         }
         yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 def _from_dict(d: dict):

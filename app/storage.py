@@ -98,7 +98,9 @@ class TelemetryStore:
             self.conn.commit()
             return cur.lastrowid
 
-    def upsert_metrics(self, session_id: str, data: dict, created_at: float | None = None, updated_at: float | None = None) -> None:
+    def upsert_metrics(
+        self, session_id: str, data: dict, created_at: float | None = None, updated_at: float | None = None
+    ) -> None:
         import time
 
         now = time.time()

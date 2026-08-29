@@ -1,4 +1,9 @@
-"""玩法引擎:命令解析、技能检定判定、状态推进。不依赖具体 LLM,可单独测试。"""
+"""玩法引擎:指令解析、骰子裁决、状态推进。不依赖具体 LLM,可单独测试。
+
+剧情推进不在此层离线预写——本层只负责「数值裁决」与「状态合法变更」:
+- DM(LLM) 当轮给出 DMPlan(叙述 / 是否建议检定 / 推进到哪个大分支),引擎按统一规则掷骰裁决;
+- 场景跳转只接受声明后的大剧情分支 id(白名单校验),防止 LLM 幻觉乱跳。
+"""
 
 from __future__ import annotations
 
@@ -61,22 +66,15 @@ def start_session(session_id: str, player_name: str = "无名调查员") -> Game
     return sess
 
 
-def _pick_roll(session: GameSession) -> int:
-    """d20 检定:潜行/敏捷相关时带 +2 熟悉加成(由状态 flags 控制)。"""
-    adv = session.state.flags.get("adv_stealth")
-    bonus = 2 if adv else 0
-    roll = dice.roll_expression(f"1d20{bonus:+d}")
-    return roll
+_DC_BASE = 10  # 统一默认检定难度;LLM 建议 dc 时可覆盖
 
 
 def run_check(session: GameSession, skill: str, seed: int | None = None, dc_override: int | None = None):
-    """执行一次 d20 技能检定:按技能与场景给出 DC,输出结构化 CheckResult。
+    """执行一次 d20 技能检定:统一默认 DC + 技能倾向微调,输出结构化 CheckResult。
 
-    dc_override: 当 LLM 结构化契约显式给出 DC 时优先采用(否则按场景自动计算)。
+    dc_override: 当 DM 结构化契约显式给出 DC 时优先采用(否则按统一默认计算)。
     """
     skill = dice.normalize_skill(skill) or "侦查"
-    scene = SCENARIO["scenes"].get(session.state.scene_id) or SCENARIO["scenes"]["prologue"]
-    base = scene.get("dc_base", 8)
 
     dc_bonus = 0
     if skill in ("侦查", "推理", "搜索", "调查", "医疗", "科技"):
@@ -85,7 +83,7 @@ def run_check(session: GameSession, skill: str, seed: int | None = None, dc_over
         dc_bonus = 1
     else:
         dc_bonus = 2
-    dc = min(14, base + dc_bonus)
+    dc = min(14, _DC_BASE + dc_bonus)
     if dc_override is not None:
         dc = max(3, min(25, int(dc_override)))
 
@@ -166,7 +164,9 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
     t = text.strip()
     if not t or t.lower() == "/help":
         add_message(
-            session, "system", "system",
+            session,
+            "system",
+            "system",
             "/roll 1d20+3 → 掷骰\n/check 侦查 → 技能检定(自动 DC)\n/scene → 查看场景卡\n/hp → 查看状态\n/restart → 重新开始\n自由行动:直接打字即可。",
         )
         return session
@@ -174,7 +174,9 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
     if t.lower() == "/restart":
         new = start_session(session.id, session.state.player.name)
         add_message(
-            new, "system", "system",
+            new,
+            "system",
+            "system",
             "世界重置,时间回到开头。你重新站在孤儿院锈迹斑斑的铁门前。",
         )
         return new
@@ -182,7 +184,10 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
     if t.lower() == "/scene":
         scene = SCENARIO["scenes"].get(session.state.scene_id)
         add_message(
-            session, "card", "system", scene["name"] + "\n" + scene.get("desc", ""),
+            session,
+            "card",
+            "system",
+            scene["name"] + "\n" + scene.get("desc", ""),
             {"scene_id": scene["id"], "image": SCENARIO["scene_images"].get(scene["id"], "")},
         )
         return session
@@ -199,11 +204,16 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
             s["rolls"] += 1
             total = roll.total
             sides = roll.sides
-            degree = "大成功" if roll.rolls and all(r == sides for r in roll.rolls) else (
-                "大失败" if total <= 4 and sides >= 6 else "普通"
+            degree = (
+                "大成功"
+                if roll.rolls and all(r == sides for r in roll.rolls)
+                else ("大失败" if total <= 4 and sides >= 6 else "普通")
             )
             add_message(
-                session, "roll", "dice", dice.summarize(roll),
+                session,
+                "roll",
+                "dice",
+                dice.summarize(roll),
                 {"expression": expr, "total": total, "degree": degree},
             )
         return session
@@ -214,7 +224,9 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
         res = run_check(session, skill_arg)
         skill_label = "技能检定" if skill_arg == "" else f"{res.skill}检定"
         add_message(
-            session, "check", "dm",
+            session,
+            "check",
+            "dm",
             f"「{skill_label}」DC={res.dc}",
             {
                 "degree": res.degree,
@@ -231,28 +243,13 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
     if t.lower() == "/hp":
         p = session.state.player
         add_message(
-            session, "system", "system",
+            session,
+            "system",
+            "system",
             f"HP {p.hp}/{p.max_hp}（{p.hp_labels[min(p.hp, len(p.hp_labels) - 1)]}）",
         )
         return session
 
-    return None
-
-
-def detect_action_intent(text: str) -> str | None:
-    """粗粒度识别玩家行动大类,供 DM 定向回应。"""
-    for kw in ["检查", "查看", "搜索", "侦查", "观察", "仔细", "翻看", "撬", "找"]:
-        if kw in text:
-            return "inspect"
-    for kw in ["攻击", "挥拳", "搏斗", "砍", "杀", "打"]:
-        if kw in text:
-            return "combat"
-    for kw in ["逃跑", "跑", "冲出去", "逃走", "离开"]:
-        if kw in text:
-            return "flee"
-    for kw in ["说话", "交谈", "询问", "对话", "交涉", "问", "说"]:
-        if kw in text:
-            return "talk"
     return None
 
 
@@ -263,6 +260,9 @@ def advance_scene(session: GameSession, scene_id: str) -> Message | None:
         return None
     session.state.scene_id = scene_id
     return add_message(
-        session, "story", "dm", scene.get("entry", ""),
+        session,
+        "story",
+        "dm",
+        scene.get("entry", ""),
         {"scene_id": scene_id},
     )

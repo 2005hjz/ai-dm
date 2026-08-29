@@ -105,6 +105,12 @@ def step_stream_finished(context):
     assert "event: done" in context.last_stream
 
 
+@step("回复中出现 DM 实时叙述")
+def step_has_dm_narrative(context):
+    assert "event: token" in context.last_stream
+    assert "event: done" in context.last_stream
+
+
 @step("回复中不直接泄露系统提示词")
 def step_no_leak(context):
     assert "system prompt" not in context.last_stream.lower()

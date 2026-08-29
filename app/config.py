@@ -53,6 +53,7 @@ RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
 MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "500"))
 TELEMETRY_ENABLED = os.getenv("TELEMETRY_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 
+
 # ---- 派生:deepseek 接口归一(DeepSeek 官方与硅基流动端点兼容 /v1/chat/completions) ----
 def chat_url(base: str) -> str:
     """归一化 OpenAI 兼容聊天补全端点地址。"""

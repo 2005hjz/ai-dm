@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-from app.gameplay import (
-    advance_scene,
-    apply_command,
-    detect_action_intent,
-    run_check,
-    start_session,
-)
+from app.gameplay import advance_scene, apply_command, run_check, start_session
 from app.persistence import new_id
 
 
@@ -83,13 +77,6 @@ def test_apply_restart_keeps_player():
 def test_apply_command_returns_none_for_free_action():
     sess = start_session(new_id())
     assert apply_command(sess, "我检查那扇门") is None
-
-
-def test_detect_action_intent():
-    assert detect_action_intent("我仔细检查门锁") == "inspect"
-    assert detect_action_intent("冲上去搏斗") == "combat"
-    assert detect_action_intent("我想逃走") == "flee"
-    assert detect_action_intent("我询问守夜人") == "talk"
 
 
 def test_advance_scene():

@@ -233,25 +233,21 @@ function renderBranchTree(data, currentId) {
   container.style.gap = "4px";
 
   const start = data.nodes.find((n) => n.id === data.order[0]) || data.nodes[0];
-
-  // 入口节点
   container.appendChild(branchNodeEl(start, currentId));
 
-  // 收集下一跳(chain 边),对每个节点渲染其推进目标
+  // 大剧情分支边走:每个节点 → 声明过的下一分支
   const children = {};
   for (const e of data.edges) {
-    if (e.kind !== "chain") continue;
-    (children[e.from] = children[e.from] || []).push(e.to);
+    if (e.kind !== "branch") continue;
+    (children[e.from] = children[e.from] || []).push(e);
   }
   for (const n of data.nodes) {
-    const next = children[n.id] || [];
-    for (const to of next) {
+    for (const e of children[n.id] || []) {
       const edge = document.createElement("div");
       edge.className = "branch-edge";
-      const advOn = (byId[n.id] && byId[n.id].advance_on) || [];
-      edge.textContent = "──>" + (advOn.length ? advOn.join(" / ") + " 检定成功" : "进入") + " → " + (byId[to] ? byId[to].name : to);
+      edge.textContent = "── " + (e.label || "推进") + " → " + (byId[e.to] ? byId[e.to].name : e.to);
       container.appendChild(edge);
-      if (byId[to]) container.appendChild(branchNodeEl(byId[to], currentId));
+      if (byId[e.to]) container.appendChild(branchNodeEl(byId[e.to], currentId));
     }
   }
   box.appendChild(container);
@@ -266,7 +262,7 @@ function branchNodeEl(n, currentId) {
   const sk = document.createElement("span");
   name.textContent = n.name;
   sk.className = "b-skill";
-  sk.textContent = (n.advance_on && n.advance_on.length ? "检定:" + n.advance_on.join("/") : "") + (n.terminal ? " · 终局" : "");
+  sk.textContent = (n.start ? "起始" : "") + (n.terminal ? " · 终局" : "");
   el.append(name, sk);
   return el;
 }

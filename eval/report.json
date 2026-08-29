@@ -1,0 +1,50 @@
+{
+  "total_trajectories": 6,
+  "passed_assertions": 17,
+  "failed_assertions": 0,
+  "pass_rate": 100.0,
+  "results": [
+    {
+      "id": "tr-01",
+      "name": "新会话开场",
+      "passed": 3,
+      "failed": 0,
+      "status": "PASS"
+    },
+    {
+      "id": "tr-02",
+      "name": "掷骰指令",
+      "passed": 3,
+      "failed": 0,
+      "status": "PASS"
+    },
+    {
+      "id": "tr-03",
+      "name": "技能检定数值裁决",
+      "passed": 5,
+      "failed": 0,
+      "status": "PASS"
+    },
+    {
+      "id": "tr-04",
+      "name": "自由行动实时响应",
+      "passed": 2,
+      "failed": 0,
+      "status": "PASS"
+    },
+    {
+      "id": "tr-06",
+      "name": "提示词注入拦截",
+      "passed": 2,
+      "failed": 0,
+      "status": "PASS"
+    },
+    {
+      "id": "tr-07",
+      "name": "超长输入被拒绝",
+      "passed": 2,
+      "failed": 0,
+      "status": "PASS"
+    }
+  ]
+}

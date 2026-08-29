@@ -73,7 +73,7 @@
     },
     {
       "id": "tr-04",
-      "name": "自由行动直接推进场景",
+      "name": "自由行动实时响应",
       "steps": [
         {
           "type": "setup",
@@ -81,41 +81,12 @@
         },
         {
           "type": "free",
-          "text": "我推开7号房的门",
-          "expect_scene": "room7"
+          "text": "我推开7号房的门"
         },
         {
           "type": "assert",
-          "kind": "events",
-          "must_contain": [
-            "推进",
-            "7号房"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "tr-05",
-      "name": "连续推进到结局链",
-      "steps": [
-        {
-          "type": "setup",
-          "player": "阿梅"
-        },
-        {
-          "type": "free",
-          "text": "我推开门进入主楼走廊",
-          "expect_scene": "hallway"
-        },
-        {
-          "type": "free",
-          "text": "进入7号房",
-          "expect_scene": "room7"
-        },
-        {
-          "type": "free",
-          "text": "前往地下室",
-          "expect_scene": "basement"
+          "kind": "system_msg",
+          "count_gte": 1
         }
       ]
     },

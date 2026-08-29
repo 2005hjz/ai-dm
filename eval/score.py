@@ -74,7 +74,9 @@ class Runner:
                     self._check(all(k in window for k in step["check_has"]), f"检定窗口包含 {step['check_has']}")
                 if step.get("check_any_of"):
                     window = "\n".join(m.content or "" for m in self.session.messages[-4:])
-                    self._check(any(k in window for k in step["check_any_of"]), f"检定窗口至少包含 {step['check_any_of']}")
+                    self._check(
+                        any(k in window for k in step["check_any_of"]), f"检定窗口至少包含 {step['check_any_of']}"
+                    )
             if step.get("stats_rolls_gte") is not None:
                 self._check(self.session.stats["rolls"] >= step["stats_rolls_gte"], "掷骰统计达标")
             if step.get("stats_checks_eq") is not None:
@@ -94,7 +96,9 @@ class Runner:
                 dice_mod.roll_expression = old_roll
             exp = step.get("expect_scene")
             if exp:
-                self._check(self.session.state.scene_id == exp, f"free: 推进到 {self.session.state.scene_id}(期望 {exp})")
+                self._check(
+                    self.session.state.scene_id == exp, f"free: 推进到 {self.session.state.scene_id}(期望 {exp})"
+                )
             return
         if typ == "free_guarded":
             text = step["text"]
@@ -116,16 +120,26 @@ class Runner:
                 texts = "".join(m.content or "" for m in self.session.messages)
                 self._check(all(k in texts for k in step["must_contain"]), f"开场包含 {step['must_contain']}")
             elif step.get("kind") == "system_msg":
-                self._check(sum(1 for m in self.session.messages if m.kind == "system") >= step.get("count_gte", 1), "存在系统消息")
+                self._check(
+                    sum(1 for m in self.session.messages if m.kind == "system") >= step.get("count_gte", 1),
+                    "存在系统消息",
+                )
             elif step.get("kind") == "check_meta":
                 checks = [m for m in self.session.messages if m.kind == "check"]
                 if not checks:
                     self._check(False, "没有 check 消息可校验 meta")
                 else:
                     meta = checks[-1].meta or {}
-                    deg_ok = step.get("has_degree", False) and meta.get("degree") in ("大成功", "成功", "失败", "大失败")
+                    deg_ok = step.get("has_degree", False) and meta.get("degree") in (
+                        "大成功",
+                        "成功",
+                        "失败",
+                        "大失败",
+                    )
                     dc_ok = step.get("has_dc", False) and isinstance(meta.get("dc"), int)
-                    self._check(deg_ok and dc_ok, f"结构化 meta 检定裁决有效 (degree={meta.get('degree')}, dc={meta.get('dc')})")
+                    self._check(
+                        deg_ok and dc_ok, f"结构化 meta 检定裁决有效 (degree={meta.get('degree')}, dc={meta.get('dc')})"
+                    )
             elif step.get("kind") == "events":
                 evs = "".join(self.session.state.events)
                 self._check(all(k in evs for k in step["must_contain"]), f"大事记包含 {step['must_contain']}")
@@ -169,9 +183,7 @@ def main() -> int:
     rate = (total_passed / total * 100) if total else 0.0
 
     report = "\n".join(grand_notes)
-    summary = (
-        f"轨迹 {len(trajectories)} 条;断言 {total_passed}/{total} 通过,失败 {total_failed};通过率 {rate:.1f}%\n"
-    )
+    summary = f"轨迹 {len(trajectories)} 条;断言 {total_passed}/{total} 通过,失败 {total_failed};通过率 {rate:.1f}%\n"
     payload = {
         "total_trajectories": len(trajectories),
         "passed_assertions": total_passed,
