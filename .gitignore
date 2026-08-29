@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# 环境变量(严禁泄露真实 API Key)
+.env
+.env.*
+
+# 运行期数据
+data/sessions/*.json
+data/images/
+data/telemetry.db
+*.log
+server.log
+server.err.log
+
+# 编辑器
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

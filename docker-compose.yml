@@ -1,0 +1,22 @@
+# AI-DM 赛博跑团引擎 — 一键编排
+# 用法:docker compose up --build
+services:
+  ai-dm-engine:
+    build: .
+    container_name: ai-dm-engine
+    ports:
+      - "8000:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      IMAGE_PROVIDER: ${IMAGE_PROVIDER:-mock}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
+      IMAGE_BASE_URL: ${IMAGE_BASE_URL:-https://api.siliconflow.cn/v1}
+      IMAGE_MODEL: ${IMAGE_MODEL:-Kwai-Kolors/Kolors}
+    volumes:
+      - ./data:/srv/ai-dm-engine/data
+    restart: unless-stopped

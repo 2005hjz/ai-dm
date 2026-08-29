@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI-DM · 赛博跑团引擎</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="app">
+  <!-- 左侧聊天区 -->
+  <main class="chat">
+    <header class="chat-head">
+      <div>
+        <h1 id="session-title">《雾中孤儿院》</h1>
+        <p class="sub" id="session-meta">连接引擎中…</p>
+      </div>
+      <div class="badges">
+        <span class="badge" id="llm-badge">Mock DM</span>
+        <span class="badge" id="img-badge">本地生图</span>
+      </div>
+    </header>
+    <div id="messages" class="messages"></div>
+    <form id="send-form" class="sendbar" autocomplete="off">
+      <span class="prompt">▍</span>
+      <input id="input" type="text" placeholder="描述你的行动，如「我检查那扇锈铁门」（斜杠指令：/roll /check /scene /hp /help）" />
+      <button id="send" type="submit">发送</button>
+    </form>
+  </main>
+
+  <!-- 右侧状态栏 -->
+  <aside class="panel">
+    <section class="new-game">
+      <input id="player-name" type="text" placeholder="你的调查员名字" />
+      <button id="btn-new" type="button">开始新冒险</button>
+    </section>
+
+    <section class="card scene-card">
+      <h2>当前场景</h2>
+      <img id="scene-img" alt="场景卡" />
+      <p id="scene-name" class="dim">—</p>
+    </section>
+
+    <section class="card sheet">
+      <h2>调查员</h2>
+      <p id="player-name-display">无名调查员</p>
+      <div class="hp" id="hp-bar"></div>
+      <p class="mini">可用技能：侦查 · 推理 · 交涉 · 潜行 · 体能 · 医疗 · 科技</p>
+    </section>
+
+    <section class="card">
+      <h2>数值与统计</h2>
+      <div class="stat-grid">
+        <div class="stat"><b id="stat-rolls">0</b><span>掷骰</span></div>
+        <div class="stat"><b id="stat-checks">0</b><span>检定</span></div>
+        <div class="stat ok"><b id="stat-pass">0</b><span>成功</span></div>
+        <div class="stat bad"><b id="stat-fail">0</b><span>失败</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>NPC 角色卡</h2>
+      <div id="npc-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>冒险日志</h2>
+      <ul id="event-log"></ul>
+    </section>
+
+    <section class="card">
+      <h2>
+        剧情分支树
+        <button id="btn-branches" type="button" class="mini-btn" title="刷新分支树">刷新</button>
+      </h2>
+      <div id="branch-tree" class="branch-tree"><p class="dim">加载中…</p></div>
+    </section>
+  </aside>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

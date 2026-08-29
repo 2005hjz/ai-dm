@@ -1,0 +1,25 @@
+# 团队级 AI 规则注入与架构约束(.rules)
+
+## Mandatory (必须)
+- layer: presentation / application / domain / infrastructure
+- forbid_cross_layer: true
+
+## Patterns (核心模式)
+- provider_abstraction: BaseLLMProvider | BaseImageProvider
+- structured_dm_contract: DMPlan { narrative, check, advance_scene }
+- dice_contract: DiceRoll | CheckResult { skill, dc, total, success, degree }
+- seeded_dice: roll_expression(expr, seed) for tests
+
+## Safety (安全)
+- api_key_secret: only in .env.example
+- sanitize_input: before every user input
+- scan_guardrails: prompt injection / jailbreak interception
+- guard_log: sensitive content masked
+
+## Persistence
+- sessions: JSON documents in data/sessions/
+- telemetry: SQLite check_log + session_metrics
+
+## Git
+- commit: Angular convention (feat/fix/test/docs/refactor/chore)
+- branch_protection: main requires PR + review + green CI
