@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, persistence, safety, storage
+from .character import build_from_form, character_options
 from .gameplay import add_message, apply_command, start_session
 from .models import WorldOutline
 from .providers import generate_world_outline, get_image_provider, get_llm_provider, propose_or_resolve
@@ -242,6 +243,72 @@ async def generate_world(payload: dict):
     )
 
 
+# ---------------------------------------------------------------- 角色卡模板(前端创建页存储)
+@app.get("/api/characters/options")
+async def character_form_options():
+    return character_options(SCENARIO["birthplaces"])
+
+
+@app.get("/api/characters")
+async def list_characters():
+    return persistence.list_character_profiles()
+
+
+@app.post("/api/characters")
+async def save_character(payload: dict):
+    """保存一份角色卡模板(前端角色创建页填写):幂等更新,id 缺省则新生成。"""
+    form = payload or {}
+    c = build_from_form(form, birthplaces=SCENARIO["birthplaces"])
+    if c is None:
+        raise HTTPException(422, "角色卡数据不合法")
+    profile_id = str(form.get("id") or "").strip() or persistence.new_id()
+    persistence.save_character_profile(profile_id, c)
+    return {"id": profile_id, "character": c.model_dump()}
+
+
+@app.get("/api/characters/{profile_id}")
+async def get_character(profile_id: str):
+    c = persistence.load_character_profile(profile_id)
+    if not c:
+        raise HTTPException(404, "角色卡不存在")
+    return {"id": profile_id, "character": c.model_dump()}
+
+
+@app.delete("/api/characters/{profile_id}")
+async def delete_character(profile_id: str):
+    if not persistence.delete_character_profile(profile_id):
+        raise HTTPException(404, "角色卡不存在")
+    return {"ok": True}
+
+
+@app.post("/api/sessions/{session_id}/character")
+async def apply_character(session_id: str, payload: dict):
+    """把保存的角色卡(或直接传入的角色卡 JSON)应用到当前会话。"""
+    sess = persistence.load_session(session_id)
+    if not sess:
+        raise HTTPException(404, "会话不存在")
+    body = payload or {}
+    profile_id = str(body.get("character_id") or "").strip()
+    if profile_id:
+        c = persistence.load_character_profile(profile_id)
+        if not c:
+            raise HTTPException(404, "角色卡不存在")
+        sess.state.player = c
+        note = f"角色卡已载入:{c.name} L{c.level} {c.race}/{c.klass}"
+    elif body.get("character") and isinstance(body["character"], dict):
+        from .models import Character
+
+        sess.state.player = Character.model_validate(body["character"])
+        note = f"角色卡已载入:{sess.state.player.name}"
+    else:
+        raise HTTPException(422, "需要 character_id 或 character 字段")
+    sess.state.phase = "done"
+    add_message(sess, "system", "system", note)
+    persistence.save_session(sess)
+    _sync_metrics(sess)
+    return {"session": await _public_session(sess)}
+
+
 # ---------------------------------------------------------------- 会话
 @app.get("/api/sessions")
 async def list_sessions():
@@ -250,10 +317,18 @@ async def list_sessions():
 
 @app.post("/api/sessions")
 async def create_session(payload: dict):
-    player_name = safety.sanitize_input((payload or {}).get("player_name") or "")[:20]
     world_id = (payload or {}).get("world_id") or "default"
     session_id = persistence.new_id()
+    player_name = safety.sanitize_input((payload or {}).get("player_name") or "无名冒险者")[:20]
     sess = start_session(session_id, player_name)
+    profile_id = str((payload or {}).get("character_id") or "").strip()
+    if profile_id:
+        c = persistence.load_character_profile(profile_id)
+        if not c:
+            raise HTTPException(404, "角色卡不存在")
+        sess.state.player = c
+        sess.state.phase = "done"
+        add_message(sess, "system", "system", f"已载入角色卡:{c.name} L{c.level} {c.race}/{c.klass}")
     if world_id != "default":
         world = persistence.load_world(world_id)
         if world:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app import persistence
 from app.main import SlidingWindowRateLimiter, app
 
 
@@ -14,6 +15,13 @@ def client():
     app._limiter = SlidingWindowRateLimiter(limit=10**6)
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def char_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(persistence.config, "CHARACTER_DIR", tmp_path / "characters")
+    (tmp_path / "characters").mkdir(exist_ok=True)
+    return tmp_path / "characters"
 
 
 def _new_session(client, name="测试员"):
@@ -170,6 +178,94 @@ def test_telemetry_written(client):
     client.post(f"/api/sessions/{sid}/command", json={"text": "/check 侦查"})
     rows = get_store().query_checks(sid)
     assert len(rows) >= 1
+
+
+def _human_mage_form():
+    return {
+        "name": "阿瑟·晨风",
+        "race": "人类",
+        "klass": "法师",
+        "background": "贵族",
+        "birthplace": "圣白城教会",
+        "abilities": {"strength": 15, "dexterity": 14, "constitution": 13, "intelligence": 15, "wisdom": 10, "charisma": 8},
+        "skills": ["说服"],
+        "sav_throws": ["智力"],
+        "spells": ["燃烧之手"],
+        "gp": 100,
+    }
+
+
+def test_character_options(client):
+    r = client.get("/api/characters/options")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["races"] and data["classes"] and data["backgrounds"] and data["birthplaces"]
+    assert len(data["abilities"]) == 6
+    assert data["skills"] and data["sav_throws"] and data["spells"]
+
+
+def test_save_load_delete_character(client, char_dir):
+    r = client.post("/api/characters", json=_human_mage_form())
+    assert r.status_code == 200, r.text
+    cid = r.json()["id"]
+    c = r.json()["character"]
+    # 人类全属性 +1 → 力量 15+1=16
+    assert c["race"] == "人类" and c["klass"] == "法师"
+    assert c["abilities"]["strength"] == 16
+    assert c["abilities"]["intelligence"] == 16
+    assert c["level"] == 1
+    assert c["prof_bonus"] == 2
+    assert c["spell_slots"] == {"1": 2}
+    assert any(s["name"] == "燃烧之手" for s in c["spells"])
+    assert c["inventory"]  # 法师起始装备包
+    assert c["gp"] == 100  # 表单显式金币优先
+
+    lst = client.get("/api/characters").json()
+    assert any(x["id"] == cid and x["name"] == "阿瑟·晨风" for x in lst)
+
+    g = client.get(f"/api/characters/{cid}").json()
+    assert g["character"]["name"] == "阿瑟·晨风"
+
+    assert client.delete(f"/api/characters/{cid}").status_code == 200
+    assert client.get(f"/api/characters/{cid}").status_code == 404
+
+
+def test_character_unknown_race_is_lenient(client, char_dir):
+    form = _human_mage_form()
+    form["race"] = "外星人"
+    r = client.post("/api/characters", json=form)
+    assert r.status_code == 200
+    assert r.json()["character"]["race"] == ""
+    assert r.json()["character"]["klass"] == "法师"
+
+
+def test_create_session_with_character_profile(client, char_dir):
+    cid = client.post("/api/characters", json=_human_mage_form()).json()["id"]
+    r = client.post("/api/sessions", json={"player_name": "阿瑟", "character_id": cid})
+    assert r.status_code == 200, r.text
+    st = r.json()["state"]
+    assert st["player"] == "阿瑟·晨风"
+    assert st["race"] == "人类" and st["klass"] == "法师"
+    assert st["abilities"]["strength"] == 16
+    assert st["phase"] == "done"
+
+
+def test_apply_character_to_session(client, char_dir):
+    sid = _new_session(client)
+    cid = client.post("/api/characters", json=_human_mage_form()).json()["id"]
+    r = client.post(f"/api/sessions/{sid}/character", json={"character_id": cid})
+    assert r.status_code == 200, r.text
+    st = r.json()["session"]["state"]
+    assert st["player"] == "阿瑟·晨风"
+    assert st["klass"] == "法师"
+    assert st["phase"] == "done"
+    err = client.post(f"/api/sessions/{sid}/character", json={})
+    assert err.status_code == 422
+
+
+def test_apply_character_404(client, char_dir):
+    sid = _new_session(client)
+    assert client.post(f"/api/sessions/{sid}/character", json={"character_id": "nope"}).status_code == 404
 
 
 def test_rate_limit_429():

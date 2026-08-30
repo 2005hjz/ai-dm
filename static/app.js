@@ -29,7 +29,38 @@ const els = {
   spellLine: document.getElementById("spell-line"),
   branchTree: document.getElementById("branch-tree"),
   btnBranches: document.getElementById("btn-branches"),
+  btnChar: document.getElementById("btn-char"),
+  btnNewChar: document.getElementById("btn-new-char"),
+  modal: document.getElementById("char-modal"),
+  charClose: document.getElementById("char-close"),
+  charForm: document.getElementById("char-form"),
+  fName: document.getElementById("f-name"),
+  fRace: document.getElementById("f-race"),
+  fClass: document.getElementById("f-class"),
+  fBackground: document.getElementById("f-background"),
+  fBirthplace: document.getElementById("f-birthplace"),
+  fRaceNote: document.getElementById("f-race-note"),
+  fAbilities: document.getElementById("f-abilities"),
+  btnStandard: document.getElementById("btn-standard"),
+  btnRandom: document.getElementById("btn-random"),
+  fSkills: document.getElementById("f-skills"),
+  fSavs: document.getElementById("f-savs"),
+  fSpells: document.getElementById("f-spells"),
+  fInventory: document.getElementById("f-inventory"),
+  btnAddItem: document.getElementById("btn-add-item"),
+  fLevel: document.getElementById("f-level"),
+  fXp: document.getElementById("f-xp"),
+  fHp: document.getElementById("f-hp"),
+  fMaxHp: document.getElementById("f-max-hp"),
+  fGp: document.getElementById("f-gp"),
+  btnSaveChar: document.getElementById("btn-save-char"),
+  btnSaveStart: document.getElementById("btn-save-start"),
+  savedList: document.getElementById("saved-char-list"),
 };
+const AB_FIELDS = ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
+const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+let charOptions = null;
+let currentCharId = null;
 
 const AB_CN = { strength: "力量", dexterity: "敏捷", constitution: "体质", intelligence: "智力", wisdom: "感知", charisma: "魅力" };
 
@@ -376,6 +407,272 @@ function handleBlock(block, sb) {
   }
 }
 
+// ---------------------------------------------------------------- 角色创建(初始身份与属性)
+async function loadCharOptions() {
+  if (charOptions) return charOptions;
+  charOptions = await api("/api/characters/options");
+  fillSelect(els.fRace, charOptions.races, "name");
+  fillSelect(els.fClass, charOptions.classes, "name");
+  fillSelect(els.fBackground, charOptions.backgrounds, "name");
+  fillSelect(els.fBirthplace, charOptions.birthplaces, "key");
+  els.fAbilities.innerHTML = (charOptions.abilities || [])
+    .map(
+      (a) =>
+        `<label class="abil-item"><span>${a.name}</span><input type="number" min="1" max="30" value="10" data-key="${a.key}" /></label>`
+    )
+    .join("");
+  els.fSkills.innerHTML = chipList(charOptions.skills, "skill");
+  els.fSavs.innerHTML = chipList(charOptions.sav_throws, "sav");
+  els.fSpells.innerHTML = chipList(
+    (charOptions.spells || []).map((s) => ({ ...s, label: s.name + " (" + s.level + "环)" })),
+    "spell"
+  );
+  els.fRace.addEventListener("change", updateRaceNote);
+  return charOptions;
+}
+
+function fillSelect(sel, items, key) {
+  sel.innerHTML = "";
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "— 请选择 —";
+  sel.appendChild(blank);
+  for (const it of items || []) {
+    const o = document.createElement("option");
+    o.value = it[key];
+    o.textContent = it[key] + (it.note || it.perk ? " · " + (it.note || it.perk) : "");
+    sel.appendChild(o);
+  }
+}
+
+function chipList(items, cls, checked) {
+  return (items || [])
+    .map((it) => {
+      const v = it.name || it.key || it.value;
+      const label = it.label || (it.name || it.key) + (it.ability ? "(" + it.ability + ")" : "");
+      const on = checked && checked.includes(v) ? " checked" : "";
+      return `<label class="chip ${cls}"><input type="checkbox" data-value="${v}"${on}><span>${label}</span></label>`;
+    })
+    .join("");
+}
+
+function checkedValues(container) {
+  return Array.from(container.querySelectorAll("input[type=checkbox]:checked")).map((i) => i.dataset.value);
+}
+
+function updateRaceNote() {
+  const race = charOptions && charOptions.races.find((r) => r.name === els.fRace.value);
+  if (!race) {
+    els.fRaceNote.textContent = "";
+    return;
+  }
+  const bonus = Object.entries(race.bonus || {})
+    .map(([k, v]) => k + " +" + v)
+    .join(", ");
+  els.fRaceNote.textContent = "种族特性:" + (race.note || "") + (bonus ? " 属性加成:" + bonus : "");
+}
+
+function setAbilitiesValues(arr) {
+  const inps = els.fAbilities.querySelectorAll("input[type=number]");
+  for (let i = 0; i < inps.length && i < (arr || []).length; i++) inps[i].value = arr[i];
+}
+
+function setAbilityFromCharacter(ab) {
+  els.fAbilities.querySelectorAll("input[type=number]").forEach((i) => {
+    i.value = ab ? (ab[i.dataset.key] ?? 10) : 10;
+  });
+}
+
+function setChecked(container, values) {
+  container.querySelectorAll("input[type=checkbox]").forEach((i) => {
+    i.checked = (values || []).includes(i.dataset.value);
+  });
+}
+
+function addInventoryRow(item) {
+  const it = item || {};
+  const row = document.createElement("div");
+  row.className = "inv-row";
+  row.innerHTML =
+    `<input type="text" name="name" placeholder="物品名" value="${it.name || ""}" />` +
+    `<input type="number" name="qty" placeholder="数量" min="1" value="${it.qty || 1}" />` +
+    `<input type="text" name="desc" placeholder="描述(可选)" value="${it.desc || ""}" />` +
+    `<input type="number" name="value" placeholder="估价gp" min="0" value="${it.value || 2}" />` +
+    '<button type="button" class="mini-btn del">✕</button>';
+  row.querySelector(".del").addEventListener("click", () => row.remove());
+  els.fInventory.appendChild(row);
+}
+
+function resetCharForm() {
+  currentCharId = null;
+  els.fName.value = "";
+  els.fRace.value = "";
+  els.fClass.value = "";
+  els.fBackground.value = "";
+  els.fBirthplace.value = "";
+  updateRaceNote();
+  setAbilityFromCharacter(null);
+  setChecked(els.fSkills, []);
+  setChecked(els.fSavs, []);
+  setChecked(els.fSpells, []);
+  els.fInventory.innerHTML = "";
+  addInventoryRow();
+  els.fLevel.value = 1;
+  els.fXp.value = 0;
+  els.fHp.value = "";
+  els.fMaxHp.value = "";
+  els.fGp.value = "";
+}
+
+function fillCharForm(c) {
+  els.fName.value = c.name || "";
+  els.fRace.value = c.race || "";
+  els.fClass.value = c.klass || "";
+  els.fBackground.value = c.background || "";
+  els.fBirthplace.value = c.birthplace || "";
+  updateRaceNote();
+  setAbilityFromCharacter(c.abilities);
+  setChecked(els.fSkills, c.skills || []);
+  setChecked(els.fSavs, c.sav_throws || []);
+  setChecked(els.fSpells, (c.spells || []).map((s) => s.name));
+  els.fInventory.innerHTML = "";
+  (c.inventory && c.inventory.length ? c.inventory : [{}]).forEach((i) => addInventoryRow(i));
+  els.fLevel.value = c.level || 1;
+  els.fXp.value = c.xp || 0;
+  els.fHp.value = c.hp || "";
+  els.fMaxHp.value = c.max_hp || "";
+  els.fGp.value = c.gp != null ? c.gp : "";
+}
+
+async function openCharModal(profileId) {
+  await loadCharOptions();
+  currentCharId = profileId || null;
+  if (currentCharId) {
+    const data = await api("/api/characters/" + currentCharId);
+    fillCharForm(data.character);
+  } else {
+    resetCharForm();
+  }
+  els.modal.classList.remove("hidden");
+}
+
+function collectCharForm() {
+  const abilities = {};
+  els.fAbilities.querySelectorAll("input[type=number]").forEach((i) => {
+    abilities[i.dataset.key] = parseInt(i.value, 10) || 10;
+  });
+  const inventory = [];
+  for (const row of els.fInventory.querySelectorAll(".inv-row")) {
+    const name = (row.querySelector('[name="name"]') || {}).value || "";
+    if (!name.trim()) continue;
+    inventory.push({
+      name: name.trim(),
+      qty: parseInt((row.querySelector('[name="qty"]') || {}).value, 10) || 1,
+      desc: (row.querySelector('[name="desc"]') || {}).value || "",
+      value: parseInt((row.querySelector('[name="value"]') || {}).value, 10) || 2,
+    });
+  }
+  const payload = {
+    name: els.fName.value.trim(),
+    race: els.fRace.value,
+    klass: els.fClass.value,
+    background: els.fBackground.value,
+    birthplace: els.fBirthplace.value,
+    abilities,
+    skills: checkedValues(els.fSkills),
+    sav_throws: checkedValues(els.fSavs),
+    spells: checkedValues(els.fSpells),
+    inventory,
+    level: parseInt(els.fLevel.value, 10) || 1,
+    xp: parseInt(els.fXp.value, 10) || 0,
+    hp: parseInt(els.fHp.value, 10) || 0,
+    max_hp: parseInt(els.fMaxHp.value, 10) || 0,
+  };
+  if (els.fGp.value.trim() !== "") payload.gp = parseInt(els.fGp.value, 10) || 0;
+  if (currentCharId) payload.id = currentCharId;
+  return payload;
+}
+
+async function saveCharacter(startNew) {
+  const payload = collectCharForm();
+  if (!payload.name) return alert("请填写角色名");
+  if (!payload.race) return alert("请选择种族");
+  if (!payload.klass) return alert("请选择职业");
+  const saved = await api("/api/characters", "POST", payload);
+  currentCharId = saved.id;
+  await renderSavedCharacters();
+  if (!startNew) {
+    alert("角色已保存:" + saved.character.name);
+    return;
+  }
+  const s = await api("/api/sessions", "POST", {
+    player_name: saved.character.name,
+    character_id: saved.id,
+  });
+  sessionId = s.id;
+  refreshSidebar(s);
+  renderAll([]);
+  const full = await api("/api/sessions/" + sessionId);
+  renderAll(full.messages || []);
+  await loadBranchTree();
+  els.modal.classList.add("hidden");
+}
+
+async function applySavedToSession(cid) {
+  if (!sessionId) return alert("请先创建或载入一个会话");
+  await api("/api/sessions/" + sessionId + "/character", "POST", { character_id: cid });
+  const full = await api("/api/sessions/" + sessionId);
+  refreshSidebar(full.session);
+  renderAll(full.messages || []);
+  await loadBranchTree();
+}
+
+async function deleteSavedCharacter(cid) {
+  if (!confirm("确定删除该角色存档?")) return;
+  await api("/api/characters/" + cid, "DELETE");
+  renderSavedCharacters();
+}
+
+async function renderSavedCharacters() {
+  const list = await api("/api/characters");
+  els.savedList.innerHTML = "";
+  if (!list || !list.length) {
+    els.savedList.innerHTML = '<p class="dim">暂无已保存角色</p>';
+    return;
+  }
+  for (const c of list) {
+    const row = document.createElement("div");
+    row.className = "saved-char";
+    const head = document.createElement("div");
+    head.className = "saved-char-head";
+    const name = document.createElement("span");
+    name.className = "saved-name";
+    name.textContent = c.name + " · L" + c.level;
+    const sub = document.createElement("div");
+    sub.className = "saved-sub";
+    sub.textContent = (c.race || "—") + " / " + (c.klass || "—") + (c.birthplace ? " · " + c.birthplace : "");
+    head.append(name, sub);
+    const acts = document.createElement("div");
+    acts.className = "saved-acts";
+    acts.innerHTML =
+      '<button type="button" class="mini-btn act-apply">应用到本会话</button>' +
+      '<button type="button" class="mini-btn act-edit">编辑</button>' +
+      '<button type="button" class="mini-btn act-del">删除</button>';
+    row.append(head, acts);
+    row.dataset.id = c.id;
+    els.savedList.appendChild(row);
+  }
+  els.savedList.querySelectorAll(".act-apply").forEach((b) => {
+    b.addEventListener("click", () => applySavedToSession(b.closest(".saved-char").dataset.id));
+  });
+  els.savedList.querySelectorAll(".act-edit").forEach((b) => {
+    b.addEventListener("click", () => openCharModal(b.closest(".saved-char").dataset.id));
+  });
+  els.savedList.querySelectorAll(".act-del").forEach((b) => {
+    b.addEventListener("click", () => deleteSavedCharacter(b.closest(".saved-char").dataset.id));
+  });
+}
+
 // ---------------------------------------------------------------- 交互
 async function sendInput() {
   const text = els.input.value.trim();
@@ -423,6 +720,30 @@ async function newGame() {
   await loadBranchTree();
 }
 
+els.form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  sendInput();
+});
+els.btnNew.addEventListener("click", newGame);
+els.btnBranches.addEventListener("click", loadBranchTree);
+
+els.btnChar.addEventListener("click", () => openCharModal(null));
+els.btnNewChar.addEventListener("click", () => openCharModal(null));
+els.charClose.addEventListener("click", () => els.modal.classList.add("hidden"));
+els.modal.addEventListener("click", (e) => {
+  if (e.target === els.modal) els.modal.classList.add("hidden");
+});
+els.charForm.addEventListener("submit", (e) => e.preventDefault());
+els.btnStandard.addEventListener("click", () => {
+  setAbilitiesValues([...STANDARD_ARRAY].sort(() => Math.random() - 0.5));
+});
+els.btnRandom.addEventListener("click", () => {
+  setAbilitiesValues(Array.from({ length: 6 }, () => 3 + Math.floor(Math.random() * 16)));
+});
+els.btnAddItem.addEventListener("click", () => addInventoryRow());
+els.btnSaveChar.addEventListener("click", () => saveCharacter(false));
+els.btnSaveStart.addEventListener("click", () => saveCharacter(true));
+
 async function init() {
   try {
     const h = await api("/api/health");
@@ -432,6 +753,8 @@ async function init() {
     els.llm.textContent = "引擎离线";
     els.img.textContent = "";
   }
+  renderSavedCharacters();
+  loadCharOptions().catch(() => {});
   const sessions = await api("/api/sessions");
   if (sessions && sessions.length) {
     const s = sessions[0];
@@ -444,12 +767,5 @@ async function init() {
   }
   await loadBranchTree();
 }
-
-els.form.addEventListener("submit", (e) => {
-  e.preventDefault();
-  sendInput();
-});
-els.btnNew.addEventListener("click", newGame);
-els.btnBranches.addEventListener("click", loadBranchTree);
 
 init();

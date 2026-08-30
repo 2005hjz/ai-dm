@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from . import config
-from .models import GameSession, Message, WorldOutline
+from .models import Character, GameSession, Message, WorldOutline
 
 
 def new_id() -> str:
@@ -40,6 +40,54 @@ def load_world(world_id: str) -> WorldOutline | None:
         return WorldOutline.model_validate(json.loads(path.read_text(encoding="utf-8")))
     except Exception:
         return None
+
+
+def _char_path(profile_id: str) -> Path:
+    return config.CHARACTER_DIR / f"{profile_id}.json"
+
+
+def save_character_profile(profile_id: str, character: Character) -> None:
+    _char_path(profile_id).write_text(character.model_dump_json(indent=2), encoding="utf-8")
+
+
+def load_character_profile(profile_id: str) -> Character | None:
+    path = _char_path(profile_id)
+    if not path.exists():
+        return None
+    try:
+        return Character.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        return None
+
+
+def list_character_profiles() -> list[dict]:
+    out: list[dict] = []
+    for path in sorted(config.CHARACTER_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        c = load_character_profile(path.stem)
+        if c:
+            out.append(
+                {
+                    "id": path.stem,
+                    "name": c.name,
+                    "race": c.race,
+                    "klass": c.klass,
+                    "background": c.background,
+                    "birthplace": c.birthplace,
+                    "level": c.level,
+                    "hp": c.hp,
+                    "max_hp": c.max_hp,
+                    "gp": c.gp,
+                }
+            )
+    return out
+
+
+def delete_character_profile(profile_id: str) -> bool:
+    path = _char_path(profile_id)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
 
 
 def list_worlds() -> list[WorldOutline]:

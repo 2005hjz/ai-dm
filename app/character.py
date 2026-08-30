@@ -27,6 +27,8 @@ class_primary = {
 
 _pack_value = {"冒险者包": 5, "追踪者包": 5, "行囊": 3, "盗贼工具": 10}
 
+_AB_FIELDS = ("strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma")
+
 
 def _numbered(items: list[dict]) -> str:
     return "\n".join(f"{i}. {it['name']} —— {it.get('note', it.get('perk', ''))}" for i, it in enumerate(items, 1))
@@ -190,6 +192,128 @@ def _pick_many(rest: str, n: int) -> list[int] | None:
     except ValueError:
         return None
     return [i for i in idxs if 1 <= i <= n] or None
+
+
+def _int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def build_from_form(form: dict | None, birthplaces: dict[str, str] | None = None) -> Character | None:
+    """从前端角色创建表单构建并结算 D&D 5e 角色卡(身份/初始属性/技能/法术/背包)。
+
+    表单属性值为「种族加成前」的基础值;本函数按 D&D 5e 规则结算种族加成、生命、
+    熟练加值、法术位与起始装备。表单含未知种族/职业/背景时对应字段留空——角色卡
+    仍可保存与使用,但规则引擎相关能力(检定/升级/法术位)按默认值工作。
+    """
+    form = form or {}
+    options = {r["name"]: r for r in dnd.RACES}
+    info = {k["name"]: k for k in dnd.CLASSES}
+    bginfo = {b["name"]: b for b in dnd.BACKGROUNDS}
+
+    name = str(form.get("name") or "").strip()[:12] or "无名冒险者"
+    race = str(form.get("race") or "").strip()
+    klass = str(form.get("klass") or "").strip()
+    background = str(form.get("background") or "").strip()
+
+    c = Character(name=name)
+    if race in options:
+        c.race = race
+    if klass in info:
+        c.klass = klass
+    if background in bginfo:
+        c.background = background
+
+    abi = form.get("abilities") or {}
+    scores = {f: _int(abi.get(f), 10) for f in _AB_FIELDS}
+    c.abilities = AbilityScores(**{f: max(1, min(30, v)) for f, v in scores.items()})
+    dnd.apply_race_bonus(c)
+
+    birthplace = str(form.get("birthplace") or "").strip()
+    if birthplaces is None:
+        birthplaces = {}
+    if birthplace in birthplaces:
+        c.birthplace = birthplace
+
+    c.level = max(1, min(20, _int(form.get("level"), 1)))
+    c.xp = max(0, _int(form.get("xp")))
+    c.prof_bonus = dnd.prof_bonus(c.level)
+    ci = info.get(c.klass, {})
+    c.spell_slots = dnd.spell_slots(c.klass, c.level)
+
+    max_hp = _int(form.get("max_hp"))
+    c.max_hp = max_hp if max_hp > 0 else max(1, ci.get("hp", 5) + dnd.mod(c.abilities.constitution))
+    hp = _int(form.get("hp"))
+    c.hp = min(c.max_hp, hp) if hp > 0 else c.max_hp
+
+    gp = form.get("gp")
+    if gp is None or gp == "" or (isinstance(gp, int) and gp == 0 and "gp" not in form):
+        gp = ci.get("gp", 20) + bginfo.get(c.background, {}).get("gp", 0)
+    c.gp = max(0, _int(gp))
+
+    skills = list(bginfo.get(c.background, {}).get("skills", []))
+    for s in form.get("skills") or []:
+        s = str(s).strip()
+        if s in dnd.SKILL_ABILITY and s not in skills:
+            skills.append(s)
+    c.skills = skills
+
+    savs = [class_primary.get(c.klass, "体质")]
+    for s in form.get("sav_throws") or []:
+        s = str(s).strip()
+        if s in dnd.ABILITY_ORDER and s not in savs:
+            savs.append(s)
+    c.sav_throws = savs
+
+    if c.spell_slots:
+        max_lv = max(c.spell_slots)
+        for name in form.get("spells") or []:
+            name = str(name).strip()
+            lv = next((lv for n, lv in dnd.SPELL_POOL if n == name), None)
+            if lv is not None and 0 < lv <= max_lv and name not in {s.name for s in c.spells}:
+                c.spells.append(Spell(name=name, level=lv, prepared=True))
+        for name, lv in [s for s in dnd.SPELL_POOL if s[1] == 0][:2]:
+            if name not in {s.name for s in c.spells}:
+                c.spells.append(Spell(name=name, level=lv, prepared=True))
+
+    for row in form.get("inventory") or []:
+        if not isinstance(row, dict) or not (row.get("name") or "").strip():
+            continue
+        value = max(0, _int(row.get("value"), 2))
+        c.inventory.append(
+            Item(
+                name=str(row.get("name"))[:40],
+                qty=max(1, _int(row.get("qty"), 1)),
+                desc=str(row.get("desc") or "")[:80],
+                effect=str(row.get("effect") or "")[:60],
+                value=value,
+            )
+        )
+    if not c.inventory:
+        for it in _starting_items(ci.get("pack", "")):
+            c.inventory.append(Item(**it))
+    return c
+
+
+def character_options(birthplaces: dict[str, str] | None = None) -> dict:
+    """角色创建表单所需选项(种族/职业/背景/出生地/技能/豁免/法术)。"""
+    races = [
+        {"name": r["name"], "note": r.get("note", ""), "bonus": {dnd.AB_CN.get(f, f): v for f, v in r.get("bonus", {}).items()}}
+        for r in dnd.RACES
+    ]
+    birthplaces = birthplaces or {}
+    return {
+        "races": races,
+        "classes": [{"name": c["name"], "gp": c.get("gp", 20), "pack": c.get("pack", "")} for c in dnd.CLASSES],
+        "backgrounds": [{"name": b["name"], "perk": b.get("perk", "")} for b in dnd.BACKGROUNDS],
+        "birthplaces": [{"key": k, "desc": v} for k, v in birthplaces.items()],
+        "abilities": [{"key": dnd.AB_FIELD[f], "name": f} for f in dnd.ABILITY_ORDER],
+        "skills": [{"name": n, "ability": dnd.SKILL_ABILITY[n]} for n in sorted(dnd.SKILL_ABILITY)],
+        "sav_throws": [{"key": f, "name": f} for f in dnd.ABILITY_ORDER],
+        "spells": [{"name": n, "level": lv} for n, lv in dnd.SPELL_POOL],
+    }
 
 
 def _finalize(state: SessionState) -> str:

@@ -32,7 +32,18 @@
   <aside class="panel">
     <section class="new-game">
       <input id="player-name" type="text" placeholder="你的调查员名字" />
-      <button id="btn-new" type="button">开始新冒险</button>
+      <div class="new-game-actions">
+        <button id="btn-new" type="button">开始新冒险</button>
+        <button id="btn-char" type="button" class="ghost">角色创建</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>
+        角色存档
+        <button id="btn-new-char" type="button" class="mini-btn">＋ 新建</button>
+      </h2>
+      <div id="saved-char-list"><p class="dim">暂无已保存角色</p></div>
     </section>
 
     <section class="card scene-card">
@@ -86,6 +97,75 @@
     </section>
   </aside>
 </div>
+<!-- 角色创建 · 初始身份与属性 -->
+<div id="char-modal" class="modal hidden">
+  <div class="modal-box">
+    <header class="modal-head">
+      <h2>角色创建 · 初始身份与属性</h2>
+      <button id="char-close" type="button" class="mini-btn" title="关闭">✕</button>
+    </header>
+    <form id="char-form" autocomplete="off">
+      <section class="form-sec">
+        <h3>身份信息</h3>
+        <div class="form-grid">
+          <label>角色名 <input id="f-name" type="text" maxlength="20" /></label>
+          <label>种族 <select id="f-race"></select></label>
+          <label>职业 <select id="f-class"></select></label>
+          <label>背景 <select id="f-background"></select></label>
+          <label>出生地 <select id="f-birthplace"></select></label>
+        </div>
+        <p id="f-race-note" class="dim"></p>
+      </section>
+
+      <section class="form-sec">
+        <h3>属性能力(六维,种族加成由引擎自动结算)</h3>
+        <div id="f-abilities" class="abil-grid"></div>
+        <div class="form-actions">
+          <button type="button" id="btn-standard" class="mini-btn">标准数组</button>
+          <button type="button" id="btn-random" class="mini-btn">随机生成</button>
+        </div>
+      </section>
+
+      <section class="form-sec">
+        <h3>熟练技能</h3>
+        <div id="f-skills" class="chip-grid"></div>
+      </section>
+
+      <section class="form-sec">
+        <h3>熟练豁免(职业主属性默认带出)</h3>
+        <div id="f-savs" class="chip-grid"></div>
+      </section>
+
+      <section class="form-sec">
+        <h3>法术(施法职业可选,缺省自动准备 2 个戏法)</h3>
+        <div id="f-spells" class="chip-grid"></div>
+      </section>
+
+      <section class="form-sec">
+        <h3>起始装备(缺省按职业标准包)</h3>
+        <div id="f-inventory"></div>
+        <button type="button" id="btn-add-item" class="mini-btn">＋ 添加物品</button>
+      </section>
+
+      <section class="form-sec">
+        <h3>初始数值</h3>
+        <div class="form-grid">
+          <label>等级 <input id="f-level" type="number" min="1" max="20" value="1" /></label>
+          <label>经验 <input id="f-xp" type="number" min="0" value="0" /></label>
+          <label>生命值 <input id="f-hp" type="number" min="0" /></label>
+          <label>最大生命 <input id="f-max-hp" type="number" min="1" /></label>
+          <label>金币 <input id="f-gp" type="number" min="0" /></label>
+        </div>
+      </section>
+
+      <footer class="modal-foot">
+        <button type="button" id="btn-save-char" class="btn">保存角色</button>
+        <button type="button" id="btn-save-start" class="btn primary">保存并开始新冒险</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

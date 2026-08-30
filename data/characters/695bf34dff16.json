@@ -1,0 +1,66 @@
+{
+  "name": "测试",
+  "race": "人类",
+  "klass": "战士",
+  "background": "平民",
+  "level": 1,
+  "xp": 0,
+  "hp": 8,
+  "max_hp": 8,
+  "gp": 50,
+  "birthplace": "孤儿院",
+  "abilities": {
+    "strength": 11,
+    "dexterity": 14,
+    "constitution": 13,
+    "intelligence": 9,
+    "wisdom": 16,
+    "charisma": 15
+  },
+  "prof_bonus": 2,
+  "skills": [
+    "说服",
+    "侦查",
+    "宗教"
+  ],
+  "sav_throws": [
+    "力量",
+    "敏捷"
+  ],
+  "spells": [],
+  "spell_slots": {},
+  "inventory": [
+    {
+      "name": "长剑",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 15,
+      "equipped": false
+    },
+    {
+      "name": "盾牌",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 15,
+      "equipped": false
+    },
+    {
+      "name": "皮甲",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 15,
+      "equipped": false
+    },
+    {
+      "name": "冒险者包",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 5,
+      "equipped": false
+    }
+  ]
+}
