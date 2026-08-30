@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import random
 import re
@@ -203,7 +204,8 @@ async def propose_or_resolve(session: GameSession, player_text: str) -> dict:
     from .gameplay import advance_scene, run_check
 
     provider = get_llm_provider()
-    plan = provider.plan(session, player_text)
+    result_plan = provider.plan(session, player_text)
+    plan = await result_plan if inspect.isawaitable(result_plan) else result_plan
     result: dict = {
         "dm_text": plan.narrative,
         "check": None,
