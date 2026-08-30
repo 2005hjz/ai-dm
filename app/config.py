@@ -34,11 +34,11 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.8"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "600"))
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 
-# ---- 图片生成提供方 ----
-IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "mock").strip().lower()  # mock | remote
+# ---- 图片生成提供方（默认走硅基流动 Z-Image；无 Key 时自动回退 mock） ----
+IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "remote").strip().lower()  # mock | remote
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "").strip()
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "https://api.siliconflow.cn/v1").strip().rstrip("/")
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "Kwai-Kolors/Kolors").strip()
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "Tongyi-MAI/Z-Image-Turbo").strip()
 IMAGE_SIZE = os.getenv("IMAGE_SIZE", "768x512").strip()
 
 # ---- 服务 ----

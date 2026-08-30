@@ -55,7 +55,7 @@ flowchart LR
     UC1 .-> UC13 : <<include>>
 
     LLMAPI["外部 LLM API (DeepSeek/硅基流动)"]
-    ImgAPI["外部生图 API (Kolors/FLUX)"]
+    ImgAPI["外部生图 API (Tongyi-MAI/Z-Image-Turbo, 硅基流动)"]
     Timer["定时触发器 (预先生图预热)"]
     UC8 ---> LLMAPI
     UC12 --> ImgAPI
