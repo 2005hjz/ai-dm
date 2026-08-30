@@ -29,6 +29,33 @@ def test_run_check_seeded_success_failure():
     assert sess.stats["rolls"] == 1
 
 
+def test_run_check_critical_20_always_success():
+    """骰 20=大成功,无论 DC 多高都成功。"""
+    sess = start_session(new_id())
+    res = run_check(sess, "感知", dc_override=25, seed=5)  # seed=5 -> d20=20
+    assert res.roll.rolls == [20]
+    assert res.success is True
+    assert res.degree == "大成功"
+
+
+def test_run_check_critical_1_always_failure():
+    """骰 1=大失败,无论加值/DC 多低都失败。"""
+    sess = start_session(new_id())
+    res = run_check(sess, "感知", dc_override=1, seed=31)  # seed=31 -> d20=1
+    assert res.roll.rolls == [1]
+    assert res.success is False
+    assert res.degree == "大失败"
+
+
+def test_run_check_non_critical_degrees():
+    """普通骰只分成功/失败(大成功/大失败仅由 1/20 触发)。"""
+    sess = start_session(new_id())
+    for seed in range(1, 50):
+        res = run_check(sess, "感知", dc_override=10, seed=seed)
+        if res.roll.total not in (1, 20):
+            assert res.degree in ("成功", "失败")
+
+
 def test_run_check_dc_override():
     sess = start_session(new_id())
     res = run_check(sess, "感知", dc_override=25, seed=3)

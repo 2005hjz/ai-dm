@@ -381,7 +381,7 @@ async def chat(session_id: str, payload: dict):
             "meta": {"scene_id": sess.state.scene_id},
         }
         sess.messages.append(_from_dict(dm_msg))
-        new_messages.append(dm_msg)
+        # DM 正文已通过 token 事件流式展示,不再进 new_messages,避免前端重复渲染
 
         async for token in get_llm_provider().stream_text(dm_text):
             yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"

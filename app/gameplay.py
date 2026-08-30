@@ -73,9 +73,15 @@ def run_check(session: GameSession, text: str, dc_override: int | None = None, s
     dc = dc_override if dc_override is not None else _default_dc(session)
 
     roll = dice.roll_expression("1d20", seed=seed)
-    total = roll.total + mod
-    success = total >= dc
-    degree = ("大成功" if total >= dc + 5 else "成功") if success else ("大失败" if total <= dc - 5 else "失败")
+    d20 = roll.total
+    total = d20 + mod
+    if d20 == 20:  # 大成功:无论加值/DC 一律成功
+        success, degree = True, "大成功"
+    elif d20 == 1:  # 大失败:无论加值/DC 一律失败
+        success, degree = False, "大失败"
+    else:
+        success = total >= dc
+        degree = "成功" if success else "失败"
     margin = total - dc
 
     xp = (dc * 3 + (dc if degree == "大成功" else 0)) if success else 0
