@@ -99,10 +99,10 @@ DEEPSEEK_API_KEY=sk-xxx                        # 你的真实 Key
 DEEPSEEK_BASE_URL=https://api.siliconflow.cn/v1   # 硅基流动示例
 DEEPSEEK_MODEL=deepseek-ai/DeepSeek-V4-Flash      # 或官方 deepseek-chat
 
-IMAGE_PROVIDER=remote                          # remote=硅基流动远程生图 API
+IMAGE_PROVIDER=remote                          # remote=远程生图 API
 IMAGE_API_KEY=sk-xxx
 IMAGE_BASE_URL=https://api.siliconflow.cn/v1
-IMAGE_MODEL=Tongyi-MAI/Z-Image-Turbo
+IMAGE_MODEL=Kwai-Kolors/Kolors
 
 LLM_TEMPERATURE=0.8
 LLM_MAX_TOKENS=600
