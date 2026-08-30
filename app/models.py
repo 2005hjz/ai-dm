@@ -1,4 +1,4 @@
-"""Pydantic 核心数据模型:会话、消息、骰子检定、检查结果。"""
+"""Pydantic 核心数据模型：D&D 5e 角色卡 / 剧本世界 / 骰子与检定（结构化数值契约）。"""
 
 from __future__ import annotations
 
@@ -8,117 +8,164 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class DiceRoll(BaseModel):
-    """一次骰子投掷的完整记录。"""
+class AbilityScores(BaseModel):
+    """D&D 5e 六维属性。"""
 
-    expression: str = Field(..., description="原始表达式,如 1d20+3")
+    strength: int = 10
+    dexterity: int = 10
+    constitution: int = 10
+    intelligence: int = 10
+    wisdom: int = 10
+    charisma: int = 10
+
+
+class Item(BaseModel):
+    """一件真实记录在案的物品；effect 为附魔描述（如「火焰+1d4伤害」）。"""
+
+    name: str
+    desc: str = ""
+    effect: str = ""
+    qty: int = 1
+    value: int = 2  # 金币估价 gp
+    equipped: bool = False
+
+
+class Spell(BaseModel):
+    """法术：0 级=戏法，1-9 级需法术位。"""
+
+    name: str
+    level: int = 0
+    desc: str = ""
+    prepared: bool = False
+
+
+class Character(BaseModel):
+    """D&D 5e 玩家角色卡：属性/职业升级/经验/金钱/法术位/背包全部结构化。"""
+
+    name: str = "无名冒险者"
+    race: str = ""
+    klass: str = ""
+    background: str = ""
+    level: int = 1
+    xp: int = 0
+    hp: int = 10
+    max_hp: int = 10
+    gp: int = 10
+    birthplace: str = ""
+    abilities: AbilityScores = Field(default_factory=AbilityScores)
+    prof_bonus: int = 2
+    skills: list[str] = Field(default_factory=list)  # 熟练技能
+    sav_throws: list[str] = Field(default_factory=list)  # 熟练豁免(属性中文名)
+    spells: list[Spell] = Field(default_factory=list)
+    spell_slots: dict[int, int] = Field(default_factory=dict)  # {法术环: 剩余位}
+    inventory: list[Item] = Field(default_factory=list)
+
+
+class WorldOutline(BaseModel):
+    """剧本（世界大纲）：与角色互不绑定，玩家可提供规则文本，DM 据此主持。"""
+
+    id: str = "default"
+    title: str = "未命名世界"
+    genre: str = "奇幻 · 剑与魔法"
+    setting: str = ""  # 世界观
+    mainline: str = ""  # 主线
+    rules_text: str = ""  # 玩家提供的规则文本（D&D 5e 缺省）
+    birthplaces: dict[str, str] = Field(default_factory=dict)  # 出生地: 描述
+    npcs: dict[str, Any] = Field(default_factory=dict)
+    scenes: dict[str, Any] = Field(default_factory=dict)  # 大分支 zone
+    scene_order: list[str] = Field(default_factory=list)
+    scene_images: dict[str, str] = Field(default_factory=dict)
+    branches: dict[str, list[dict]] = Field(default_factory=dict)  # {zone: [{target,label}]}
+    encounters: list[str] = Field(default_factory=list)
+
+
+class DiceRoll(BaseModel):
+    """一次骰子投掷的完整记录（AI 代投）。"""
+
+    expression: str
     count: int
     sides: int
     modifier: int
-    rolls: list[int] = Field(default_factory=list, description="每颗骰子的点数")
+    rolls: list[int] = Field(default_factory=list)
     total: int
 
 
 class CheckResult(BaseModel):
-    """一次技能检定(数值判定)的结果。"""
+    """一次 d20 属性检定结果：显式展示能力名/属性值/加值/DC，方便玩家判断。"""
 
-    skill: str
+    ability: str  # 中文能力名，如 感知
+    value: int  # 属性值
+    modifier: int  # 属性修正(+熟练加值)
+    proficient: bool = False
     dc: int
-    advantage: bool = False
+    advice: str = "普通"  # 优势/劣势/普通
     roll: DiceRoll
     success: bool
-    margin: int = 0  # 成功/失败幅度,正值越高越出色
-    degree: str = "普通"  # 大成功 / 成功 / 失败 / 大失败
+    margin: int
+    degree: str = "失败"  # 大成功/成功/失败/大失败
+    xp: int = 0  # 成功检定奖励经验
     narrative: str = ""
 
     @property
     def total(self) -> int:
-        """便捷属性:检定掷骰总点。"""
         return self.roll.total
 
 
 class Message(BaseModel):
-    """对话消息。kind 决定前端怎么渲染。"""
+    """对话消息。kind 决定前端渲染：story|player|system|roll|check|card|menu。"""
 
     id: str
-    kind: str = "story"  # story | player | system | roll | check | card
+    kind: str = "story"
     role: str
     content: str
     ts: float = Field(default_factory=time.time)
     meta: dict[str, Any] | None = None
 
-    # 只存内容,按需组装
-    id_by_ts: str = ""
-
-
-class PlayerState(BaseModel):
-    name: str = "无名调查员"
-    hp: int = 5
-    max_hp: int = 5
-    hp_labels: list[str] = Field(default_factory=lambda: ["完整", "轻伤", "受伤", "重伤", "濒死", "生命垂危"])
-
-
-class CharacterMeta(BaseModel):
-    """NPC / 关键物件信息,前端用于渲染角色卡。"""
-
-    npc_id: str
-    name: str
-    title: str = ""
-    alive: bool = True
-    relation: int = 0  # -100 ~ 100
-    hp: int = 3
-    max_hp: int = 3
-    portrait: str | None = None  # 图片 data url
-    desc: str = ""
-
-
-class SceneInfo(BaseModel):
-    scene_id: str
-    name: str
-    entry_text: str
-    is_terminal: bool = False
-
-
-class SessionState(BaseModel):
-    """会话的动态世界状态。"""
-
-    scene_id: str = "prologue"
-    turn: int = 0
-    player: PlayerState = Field(default_factory=PlayerState)
-    # 用宽松 dict 而非 CharacterMeta:保持 JSON 往返原样,避免反序列化变成对象后按下标取报错
-    npcs: dict[str, Any] = {}
-    flags: dict[str, Any] = {}
-    discovered: list[str] = []
-    skill_list: list[str] = []
-    events: list[str] = []  # 游戏内重大事件记录
-
 
 class SkillProposal(BaseModel):
-    """LLM 建议的一次数值检定(结构化输出契约)。"""
+    """LLM 建议的一次数值检定：能力名或技能名 + 可选 DC。"""
 
-    skill: str = Field(..., description="建议检定的技能名,如:侦查/推理/交涉")
-    reason: str = Field("", description="为何发起这次检定的简短理由")
-    dc: int | None = Field(None, description="可选:由 LLM 直接建议 DC,缺省时引擎按场景自动计算")
+    skill: str = ""
+    ability: str | None = Field(None, description="直接指定能力，如 感知；优先于 skill")
+    reason: str = ""
+    dc: int | None = None
 
 
 class DMPlan(BaseModel):
-    """一次自由行动中 DM 的结构化决策输出(Pydantic 数值检定契约)。"""
+    """一次自由行动中 DM 的结构化决策输出：叙述/检定/推进/记账。"""
 
-    narrative: str = Field(..., min_length=1, description="DM 对玩家行动的主叙述")
-    check: SkillProposal | None = Field(None, description="是否附带一次技能检定")
-    advance_scene: str | None = Field(None, description="可选:直接推进到的场景 id")
-    triggers: list[str] = Field(default_factory=list, description="本轮触发的事件/状态变更标签")
+    narrative: str = Field(..., min_length=1)
+    check: SkillProposal | None = None
+    advance_scene: str | None = None
+    triggers: list[str] = Field(default_factory=list)
+    loot: list[Item] = Field(default_factory=list)  # 获得物品（自动入库）
+    gold: int = 0  # 金币增减
+    hp: int = 0  # HP 增减（负为伤害）
+
+
+class SessionState(BaseModel):
+    """会话动态世界状态：场景/角色/世界/旗标/大事记。"""
+
+    scene_id: str = "prologue"
+    turn: int = 0
+    phase: str = ""  # 角色创建向导阶段
+    player: Character = Field(default_factory=Character)
+    world: WorldOutline = Field(default_factory=WorldOutline)
+    npcs: dict[str, Any] = Field(default_factory=dict)
+    flags: dict[str, Any] = Field(default_factory=dict)
+    events: list[str] = Field(default_factory=list)
+    pending: dict[str, Any] = Field(default_factory=dict)
 
 
 class GameSession(BaseModel):
-    """一次跑团会话(持久化单元)。"""
+    """一次跑团会话（持久化单元）。"""
 
     id: str
     title: str
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     state: SessionState = Field(default_factory=SessionState)
-    messages: list[Message] = []
+    messages: list[Message] = Field(default_factory=list)
     stats: dict[str, Any] = Field(
         default_factory=lambda: {
             "rolls": 0,
@@ -127,5 +174,6 @@ class GameSession(BaseModel):
             "checks_failed": 0,
             "big_success": 0,
             "big_failure": 0,
+            "xp": 0,
         }
     )

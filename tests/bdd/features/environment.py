@@ -15,8 +15,12 @@ import app.main as main_mod  # noqa: E402
 
 
 def before_all(context):
-    # 放行限流:BDD 验收场景不触发 429
+    # 放行限流:BDD 验收场景不触发 429;并强制离线 mock(不触碰真实 API Key)
     main_mod._limiter = main_mod.SlidingWindowRateLimiter(limit=10**6)
+    from app import config as cfg
+
+    cfg.LLM_PROVIDER = "mock"
+    cfg.IMAGE_PROVIDER = "mock"
 
 
 def before_scenario(context, scenario):

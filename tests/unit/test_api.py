@@ -48,8 +48,10 @@ def test_session_not_found(client):
 
 def test_scenario_metadata(client):
     data = client.get("/api/scenario").json()
-    assert data["title"] == "《雾中孤儿院》"
+    assert data["title"] == "《风铃镇·灰烬墓穴》"
     assert len(data["scenes"]) >= 5
+    assert len(data["birthplaces"]) >= 5
+    assert data["encounters"]
 
 
 def test_scenario_branches(client):
@@ -87,6 +89,22 @@ def test_restart_keeps_player(client):
     r = client.post(f"/api/sessions/{sid}/command", json={"text": "/restart"})
     assert r.status_code == 200
     assert r.json()["session"]["state"]["player"] == "老白"
+
+
+def test_char_wizard_creates_dnd_sheet(client):
+    """D&D 5e 角色向导全流程:种族/职业/背景/属性/出生地/法术,全部编号选择。"""
+    sid = _new_session(client, name="阿瑟")
+    for step in ("/char 1", "/char 1", "/char 9", "/char 3", "/char 15,14,13,8,12,10", "/char 1", "/char 1,2,4"):
+        r = client.post(f"/api/sessions/{sid}/command", json={"text": step})
+        assert r.status_code == 200, step
+    full = client.get(f"/api/sessions/{sid}").json()
+    st = full["session"]["state"]
+    assert st["player"] == "阿瑟"
+    assert st["klass"] == "法师" and st["background"] == "贵族"
+    assert st["birthplace"]
+    assert st["spell_slots"].get("1") == 2
+    assert st["inventory"]
+    assert st["phase"] == "done"
 
 
 def test_chat_streams_sse(client):
@@ -129,20 +147,20 @@ def test_chat_scene_advance_by_dm_plan(client, monkeypatch):
         name = "fake"
 
         def plan(self, session, player_text):
-            assert "7号房" in player_text
-            return DMPlan(narrative="你推开7号房的木门,门应声而开。", advance_scene="room7", triggers=["branch"])
+            assert "黑松森林" in player_text
+            return DMPlan(narrative="你沿旧路走进黑松森林,雾在林间流淌。", advance_scene="forest", triggers=["branch"])
 
         async def stream_text(self, full_text, delay=0.02):
             yield full_text
 
     monkeypatch.setattr(providers, "get_llm_provider", lambda: FakeDM())
     sid = _new_session(client)
-    with client.stream("POST", f"/api/sessions/{sid}/chat", json={"text": "我推开7号房的门"}) as r:
+    with client.stream("POST", f"/api/sessions/{sid}/chat", json={"text": "我直奔黑松森林"}) as r:
         assert r.status_code == 200
         for _ in r.iter_lines():
             pass
     full = client.get(f"/api/sessions/{sid}").json()
-    assert full["session"]["state"]["scene_id"] == "room7"
+    assert full["session"]["state"]["scene_id"] == "forest"
 
 
 def test_telemetry_written(client):

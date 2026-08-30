@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from . import config
-from .models import GameSession, Message
+from .models import GameSession, Message, WorldOutline
 
 
 def new_id() -> str:
@@ -22,6 +22,33 @@ def _safe_name(name: str) -> str:
 
 def _path(session_id: str) -> Path:
     return config.SESSION_DIR / f"{session_id}.json"
+
+
+def _world_path(world_id: str) -> Path:
+    return config.WORLD_DIR / f"{world_id}.json"
+
+
+def save_world(world: WorldOutline) -> None:
+    _world_path(world.id).write_text(world.model_dump_json(indent=2), encoding="utf-8")
+
+
+def load_world(world_id: str) -> WorldOutline | None:
+    path = _world_path(world_id)
+    if not path.exists():
+        return None
+    try:
+        return WorldOutline.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        return None
+
+
+def list_worlds() -> list[WorldOutline]:
+    out = []
+    for path in sorted(config.WORLD_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        world = load_world(path.stem)
+        if world:
+            out.append(world)
+    return out
 
 
 def save_session(session: GameSession) -> None:

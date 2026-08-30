@@ -16,6 +16,15 @@ from app import persistence  # noqa: E402
 TEST_DIR = ROOT / "data" / "sessions"
 
 
+@pytest.fixture(autouse=True)
+def _force_offline_dm(monkeypatch):
+    """所有测试强制离线 mock:不触碰真实 API Key,检定/世界生成/生图全走确定性兜底。"""
+    from app import config
+
+    monkeypatch.setattr(config, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(config, "IMAGE_PROVIDER", "mock")
+
+
 @pytest.fixture()
 def anyio_backend():
     return "asyncio"

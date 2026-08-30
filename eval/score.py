@@ -22,9 +22,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import app.dice as dice_mod  # noqa: E402
+from app import config as _cfg  # noqa: E402
 from app import persistence, safety  # noqa: E402
 from app.gameplay import apply_command, start_session  # noqa: E402
 from app.safety import InputValidationError  # noqa: E402
+
+# 离线确定性评测:绝不触碰真实 API Key,LLM/生图一律走 mock
+_cfg.LLM_PROVIDER = "mock"
+_cfg.IMAGE_PROVIDER = "mock"
 
 
 def _seeded_roll(expr: str, seed: int | None = None):
@@ -140,6 +145,16 @@ class Runner:
                     self._check(
                         deg_ok and dc_ok, f"结构化 meta 检定裁决有效 (degree={meta.get('degree')}, dc={meta.get('dc')})"
                     )
+            elif step.get("kind") == "char_sheet":
+                c = self.session.state.player
+                checks = [
+                    step.get("has_race") is not True or bool(c.race),
+                    step.get("has_abilities") is not True or c.abilities.strength != 0,
+                    step.get("has_spells") is not True or bool(c.spells),
+                ]
+                if isinstance(step.get("has_klass"), str):
+                    checks.append(c.klass == step["has_klass"])
+                self._check(all(checks), f"角色卡:种族={c.race} 职业={c.klass} 等级={c.level}")
             elif step.get("kind") == "events":
                 evs = "".join(self.session.state.events)
                 self._check(all(k in evs for k in step["must_contain"]), f"大事记包含 {step['must_contain']}")

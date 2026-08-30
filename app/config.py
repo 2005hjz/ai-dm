@@ -18,9 +18,11 @@ _loaded = load_dotenv(BASE_DIR / ".env", override=False)
 
 DATA_DIR = BASE_DIR / "data"
 SESSION_DIR = DATA_DIR / "sessions"
+WORLD_DIR = DATA_DIR / "worlds"
 IMAGE_CACHE_DIR = DATA_DIR / "images"
 DATA_DIR.mkdir(exist_ok=True)
 SESSION_DIR.mkdir(exist_ok=True)
+WORLD_DIR.mkdir(exist_ok=True)
 IMAGE_CACHE_DIR.mkdir(exist_ok=True)
 
 # ---- LLM 提供方 ----

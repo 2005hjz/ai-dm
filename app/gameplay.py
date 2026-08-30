@@ -1,18 +1,17 @@
-"""玩法引擎:指令解析、骰子裁决、状态推进。不依赖具体 LLM,可单独测试。
+"""玩法引擎(application层):指令解析、d20 属性检定数值裁决、状态推进。
 
-剧情推进不在此层离线预写——本层只负责「数值裁决」与「状态合法变更」:
-- DM(LLM) 当轮给出 DMPlan(叙述 / 是否建议检定 / 推进到哪个大分支),引擎按统一规则掷骰裁决;
-- 场景跳转只接受声明后的大剧情分支 id(白名单校验),防止 LLM 幻觉乱跳。
+- 检定严格 D&D 5e:d20 + 属性修正(+熟练加值) vs DC;展示属性值/加值/DC 供玩家判断;
+- 成功检定奖励 XP,引擎自动结算升级(属性/生命/熟练加值随等级成长);
+- 剧情推进只走「世界声明的大分支」白名单,防 LLM 幻觉乱跳。
 """
 
 from __future__ import annotations
 
 import re
 
-from . import dice
+from . import character, dice, dnd
 from .models import CheckResult, GameSession, Message
 from .persistence import new_id
-from .scenario import SCENARIO
 
 
 def add_message(session: GameSession, kind: str, role: str, content: str, meta: dict | None = None) -> Message:
@@ -21,24 +20,15 @@ def add_message(session: GameSession, kind: str, role: str, content: str, meta: 
     return msg
 
 
-def start_session(session_id: str, player_name: str = "无名调查员") -> GameSession:
-    """创建新会话,写入开场剧情。"""
-    sess = GameSession(id=session_id, title=SCENARIO["title"])
-    sess.state.player.name = player_name
-    sess.state.skill_list = list(SCENARIO["skills"])
-    for npc_id, npc in SCENARIO["npcs"].items():
-        sess.state.npcs[npc_id] = {
-            "npc_id": npc_id,
-            "name": npc["name"],
-            "title": npc.get("title", ""),
-            "alive": True,
-            "relation": npc.get("relation", 0),
-            "hp": npc.get("hp", 3),
-            "max_hp": npc.get("hp", 3),
-            "portrait": npc.get("portrait", ""),
-            "desc": npc.get("desc", ""),
-        }
-    prologue = SCENARIO["scenes"]["prologue"]
+def start_session(session_id: str, player_name: str = "无名冒险者") -> GameSession:
+    """创建新会话:注入默认世界与开场剧情;角色由 /char 向导创建(与剧本互不绑定)。"""
+    sess = GameSession(id=session_id, title=dnd_default().title)
+    st = sess.state
+    st.player.name = player_name
+    st.world = dnd_default()
+    for npc_id, npc in st.world.npcs.items():
+        st.npcs[npc_id] = dict(npc)
+    prologue = st.world.scenes["prologue"]
     sess.messages = [
         Message(
             id=f"story-{new_id()}",
@@ -52,73 +42,99 @@ def start_session(session_id: str, player_name: str = "无名调查员") -> Game
             kind="system",
             role="system",
             content=(
-                "· 自由行动:直接打字描述你的动作,我会实时判定并演进剧情\n"
-                "· /roll 1d20+3  掷骰\n"
-                "· /check 侦查    技能检定(我按场景给出 DC)\n"
-                "· /scene         查看当前场景卡\n"
-                "· /hp            查看状态\n"
-                "· /help          查看指令\n"
-                "· /restart       重新开始\n"
-                "输入「开始冒险」即可继续。"
+                "· /char            创建角色(种族/职业/背景/属性/出生地,编号选择)\n"
+                "· 自由行动         直接描写动作,DM 实时裁决\n"
+                "· /check 感知      属性检定(显示属性值/加值/DC)\n"
+                "· /roll 1d20+3     掷骰\n"
+                "· /inv /hp /gp /spells 查看物资\n"
+                "· /sell 1          出售物品 · /rest 长休 · /damage 3 扣血\n"
+                "· /scene 场景卡 /help 指令 /restart 重新开始\n"
+                "先输入 /char 1 创建你的角色,再开始冒险。"
             ),
         ),
     ]
     return sess
 
 
-_DC_BASE = 10  # 统一默认检定难度;LLM 建议 dc 时可覆盖
+def dnd_default():
+    from .scenario import default_world
+
+    return default_world()
 
 
-def run_check(session: GameSession, skill: str, seed: int | None = None, dc_override: int | None = None):
-    """执行一次 d20 技能检定:统一默认 DC + 技能倾向微调,输出结构化 CheckResult。
-
-    dc_override: 当 DM 结构化契约显式给出 DC 时优先采用(否则按统一默认计算)。
-    """
-    skill = dice.normalize_skill(skill) or "侦查"
-
-    dc_bonus = 0
-    if skill in ("侦查", "推理", "搜索", "调查", "医疗", "科技"):
-        dc_bonus = 0
-    elif skill in ("交涉", "欺骗", "恐吓", "潜行", "体能"):
-        dc_bonus = 1
-    else:
-        dc_bonus = 2
-    dc = min(14, _DC_BASE + dc_bonus)
-    if dc_override is not None:
-        dc = max(3, min(25, int(dc_override)))
+def run_check(session: GameSession, text: str, dc_override: int | None = None, seed: int | None = None) -> CheckResult:
+    """执行一次 d20 属性检定:能力/属性值/加值/DC 全部显式化,成功奖励 XP。"""
+    c = session.state.player
+    ability = dnd.resolve_ability(text)
+    value = dnd.ability_value(c, ability)
+    proficient = _is_proficient(session, text, ability)
+    prof = c.prof_bonus if proficient else 0
+    mod = dnd.mod(value) + prof
+    dc = dc_override if dc_override is not None else _default_dc(session)
 
     roll = dice.roll_expression("1d20", seed=seed)
-    if skill in ("潜行", "敏捷") and session.state.flags.get("adv_stealth"):
-        roll.total += 2
-        roll.modifier += 2
-    total = roll.total
+    total = roll.total + mod
     success = total >= dc
-
     degree = ("大成功" if total >= dc + 5 else "成功") if success else ("大失败" if total <= dc - 5 else "失败")
     margin = total - dc
 
+    xp = (dc * 3 + (dc if degree == "大成功" else 0)) if success else 0
+    if xp:
+        leveled = dnd.award_xp(c, xp)
+        session.stats["xp"] += xp
+        if leveled:
+            session.state.events.append(f"升级!你的等级已提升至 L{c.level}(HP上限 {c.max_hp})")
+
     res = CheckResult(
-        skill=skill,
+        ability=ability,
+        value=value,
+        modifier=mod,
+        proficient=proficient,
         dc=dc,
         roll=roll,
         success=success,
         margin=margin,
         degree=degree,
-        narrative=_narrative(skill, success, degree),
+        xp=xp,
+        narrative=_narrative(session, ability, value, mod, dc, roll.total, success, degree, xp),
     )
 
     s = session.stats
     s["checks"] += 1
     s["checks_passed" if success else "checks_failed"] += 1
-    s["big_success" if degree == "大成功" else "big_failure"] += 1
+    s["big_success"] += degree == "大成功"
+    s["big_failure"] += degree == "大失败"
     s["rolls"] += 1
 
     _log_check(session, res)
     return res
 
 
+def _is_proficient(session: GameSession, text: str, ability: str) -> bool:
+    c = session.state.player
+    if ability in c.sav_throws:
+        return True
+    skill = dice.normalize_skill(text) or text.strip()
+    return skill in c.skills and dnd.SKILL_ABILITY.get(skill) == ability
+
+
+
+def _default_dc(session: GameSession) -> int:
+    scene = session.state.scene_id
+    return 14 if scene in ("tomb", "sanctum") else 12
+
+
+def _narrative(session, ability, value, mod, dc, d20, success, degree, xp) -> str:
+    prof_note = "(含熟练加值)" if mod != dnd.mod(value) else ""
+    head = "成功" if success else "失败"
+    extra = f" 获得 {xp} XP!" if xp else " 未获得经验。"
+    return (
+        f"【{ability}检定】你的{ability}={value},修正{mod:+d}{prof_note},难度 DC {dc}。\n"
+        f"DM 已代你投出 d20={d20},合计 {d20 + mod} → {degree}/{head}{extra}"
+    )
+
+
 def _log_check(session: GameSession, res: CheckResult) -> None:
-    """写入 SQLite 审计(结构化数值检定),失败不影响主流程(防御性编程)。"""
     try:
         from . import storage
 
@@ -127,9 +143,9 @@ def _log_check(session: GameSession, res: CheckResult) -> None:
                 session_id=session.id,
                 turn=session.state.turn,
                 scene_id=session.state.scene_id,
-                skill=res.skill,
+                skill=res.ability,
                 dc=res.dc,
-                total=res.roll.total,
+                total=res.roll.total + res.modifier,
                 success=res.success,
                 degree=res.degree,
                 expression=res.roll.expression,
@@ -138,131 +154,173 @@ def _log_check(session: GameSession, res: CheckResult) -> None:
         pass
 
 
-def _narrative(skill: str, success: bool, degree: str) -> str:
-    if degree == "大成功":
-        head = "这一手漂亮极了。"
-    elif degree == "大失败":
-        head = "糟糕,事情被搞砸了。"
-    elif success:
-        head = "你成功了。"
-    else:
-        head = "你失败了。"
-    body = {
-        "侦查": "雾气太浓,视线被吞掉;你眯起眼睛,从被忽略的角落捞出一个细节。",
-        "推理": "线索在脑中叮咚一声撞在一起,你隐约摸到了真相的轮廓。",
-        "交涉": "对方措辞松动,气氛缓和下来。",
-        "潜行": "你贴着墙根挪动,脚步轻得像雾。",
-        "体能": "你鼓足一口气完成动作,呼哧带喘却稳稳落地。",
-        "医疗": "手法干净利落,伤口被稳稳处理。",
-        "科技": "设备发出一声清脆提示音,成功了。",
-    }.get(skill, "")
-    return f"{head}{body}"
+def _cmd(args: str) -> tuple[str, str]:
+    parts = (args or "").strip().split(maxsplit=1)
+    return (parts[0] if parts else "", parts[1].strip() if len(parts) > 1 else "")
 
 
 def apply_command(session: GameSession, text: str) -> GameSession | None:
-    """处理斜杠指令;返回 None 表示属于自由行动,应交给 DM 引擎。"""
+    """处理斜杠指令;返回 None 表示自由行动,应交 DM 引擎。"""
     t = text.strip()
     if not t or t.lower() == "/help":
-        add_message(
-            session,
-            "system",
-            "system",
-            "/roll 1d20+3 → 掷骰\n/check 侦查 → 技能检定(自动 DC)\n/scene → 查看场景卡\n/hp → 查看状态\n/restart → 重新开始\n自由行动:直接打字即可。",
-        )
+        add_message(session, "system", "system", (
+            "/char 创建角色 · /check 感知 [DC] 属性检定(显式数值) · /roll 1d20+3 掷骰\n"
+            "/hp 生命 /gp 金币 /inv 背包(含附魔) /spells 法术位 · /sell 编号 出售\n"
+            "/rest 长休(回满HP+法术位) · /damage N /heal N /xp N /loot N\n"
+            "/scene 场景卡 · /restart 重新开始\n自由行动:直接描写角色动作即可。"
+        ))
         return session
 
     if t.lower() == "/restart":
         new = start_session(session.id, session.state.player.name)
-        add_message(
-            new,
-            "system",
-            "system",
-            "世界重置,时间回到开头。你重新站在孤儿院锈迹斑斑的铁门前。",
-        )
+        add_message(new, "system", "system", "世界重置,时间回到风铃镇傍晚的广场。")
         return new
 
+    if t.lower() == "/char":
+        for content in character.choose(session.state, ""):
+            add_message(session, "system", "system", content)
+        return session
+    if t.lower().startswith("/char "):
+        for content in character.choose(session.state, t[6:].strip()):
+            add_message(session, "system", "system", content)
+        return session
+
     if t.lower() == "/scene":
-        scene = SCENARIO["scenes"].get(session.state.scene_id)
+        world = session.state.world
+        scene = world.scenes.get(session.state.scene_id)
         add_message(
             session,
             "card",
             "system",
             scene["name"] + "\n" + scene.get("desc", ""),
-            {"scene_id": scene["id"], "image": SCENARIO["scene_images"].get(scene["id"], "")},
+            {"scene_id": scene["id"], "image": world.scene_images.get(scene["id"], "")},
         )
         return session
 
     m = re.match(r"/roll\s+(.+)", t, re.IGNORECASE)
     if m:
-        expr = m.group(1).strip()
         try:
-            roll = dice.roll_expression(expr)
+            roll = dice.roll_expression(m.group(1).strip())
         except dice.DiceFormatError as e:
             add_message(session, "system", "system", str(e))
         else:
-            s = session.stats
-            s["rolls"] += 1
-            total = roll.total
-            sides = roll.sides
-            degree = (
-                "大成功"
-                if roll.rolls and all(r == sides for r in roll.rolls)
-                else ("大失败" if total <= 4 and sides >= 6 else "普通")
-            )
-            add_message(
-                session,
-                "roll",
-                "dice",
-                dice.summarize(roll),
-                {"expression": expr, "total": total, "degree": degree},
-            )
+            session.stats["rolls"] += 1
+            add_message(session, "roll", "dice", dice.summarize(roll), {"expression": roll.expression, "total": roll.total})
         return session
 
     m = re.match(r"/check\s*(.*)", t, re.IGNORECASE)
     if m:
-        skill_arg = m.group(1).strip()
-        res = run_check(session, skill_arg)
-        skill_label = "技能检定" if skill_arg == "" else f"{res.skill}检定"
-        add_message(
-            session,
-            "check",
-            "dm",
-            f"「{skill_label}」DC={res.dc}",
-            {
-                "degree": res.degree,
-                "dc": res.dc,
-                "total": res.roll.total,
-                "success": res.success,
-                "skill": res.skill,
-            },
-        )
-        add_message(session, "story", "dm", res.narrative)
+        arg = m.group(1).strip()
+        dc_override = None
+        mdc = re.match(r"(.+?)\s+(\d{1,2})$", arg)
+        if mdc:
+            arg, dc_override = mdc.group(1).strip(), int(mdc.group(2))
+        res = run_check(session, arg or "感知", dc_override=dc_override)
+        add_message(session, "check", "dm", res.narrative, {
+            "ability": res.ability,
+            "value": res.value,
+            "modifier": res.modifier,
+            "dc": res.dc,
+            "total": res.roll.total + res.modifier,
+            "degree": res.degree,
+            "success": res.success,
+            "xp": res.xp,
+        })
         add_message(session, "roll", "dice", dice.summarize(res.roll))
         return session
 
     if t.lower() == "/hp":
         p = session.state.player
-        add_message(
-            session,
-            "system",
-            "system",
-            f"HP {p.hp}/{p.max_hp}（{p.hp_labels[min(p.hp, len(p.hp_labels) - 1)]}）",
-        )
+        add_message(session, "system", "system", f"HP {p.hp}/{p.max_hp} | 生命状态:{'濒危' if p.hp <= 0 else ('重伤' if p.hp <= p.max_hp // 3 else '良好')}")
         return session
+
+    if t.lower() == "/gp":
+        add_message(session, "system", "system", f"金币 {session.state.player.gp} gp")
+        return session
+
+    if t.lower() == "/inv":
+        add_message(session, "system", "system", _inventory_text(session))
+        return session
+
+    if t.lower().startswith("/sell"):
+        return _handle_sell(session, t)
+
+    if t.lower() == "/spells":
+        c = session.state.player
+        slots = " ".join(f"{lv}环×{n}" for lv, n in sorted(c.spell_slots.items())) or "无"
+        spells = "、".join(s["name"] for s in c.spells if s["prepared"]) or "无"
+        add_message(session, "system", "system", f"法术位:{slots} | 已准备:{spells}")
+        return session
+
+    if t.lower() == "/rest":
+        c = session.state.player
+        c.hp = c.max_hp
+        c.spell_slots = dnd.spell_slots(c.klass, c.level)
+        session.state.events.append("长休完成:HP 与法术位已回复。")
+        add_message(session, "system", "system", f"长休完成。HP {c.hp}/{c.max_hp},法术位已回满。")
+        return session
+
+    m = re.match(r"/(damage|heal|xp|loot)\s+(\d{1,5})", t, re.IGNORECASE)
+    if m:
+        op, n = m.group(1).lower(), int(m.group(2))
+        c = session.state.player
+        if op in ("damage", "heal"):
+            c.hp = min(c.max_hp, c.hp + (-n if op == "damage" else n))
+            add_message(session, "system", "system", f"HP → {c.hp}/{c.max_hp}")
+            return session
+        if op == "xp":
+            leveled = dnd.award_xp(c, n)
+            session.stats["xp"] += n
+            note = f"升级!当前 L{c.level}" if leveled else ""
+            add_message(session, "system", "system", f"经验 +{n} XP(总数 {c.xp}){note}")
+            return session
+        if op == "loot":
+            c.gp += n
+            session.state.events.append(f"获得 {n} gp")
+            add_message(session, "system", "system", f"金币 +{n}(当前 {c.gp} gp)")
+            return session
 
     return None
 
 
+def _handle_sell(session: GameSession, t: str) -> GameSession:
+    c = session.state.player
+    arg = _cmd(t.lower().replace("/inv", "/sell").replace("/sell", "/sell"))[1]
+    if not c.inventory:
+        add_message(session, "system", "system", "背包是空的,没什么可卖。")
+        return session
+    idx = None
+    if arg.isdigit():
+        idx = int(arg)
+    else:
+        for i, it in enumerate(c.inventory, 1):
+            if arg and (arg in it.name or it.name in arg):
+                idx = i
+                break
+    if idx is None or not (1 <= idx <= len(c.inventory)):
+        add_message(session, "system", "system", "请给出想出售的物品编号: /sell 1,当前背包:\n" + _inventory_text(session))
+        return session
+    item = c.inventory.pop(idx - 1)
+    price = dnd.item_value(item, c.abilities.charisma)
+    c.gp += price
+    session.state.events.append(f"出售 {item.name},得 {price} gp")
+    add_message(session, "system", "system", f"你以 {price} gp 出售了 {item.name}×{item.qty}。当前 {c.gp} gp(魅力带来折扣,懂行的买家)。")
+    return session
+
+
+def _inventory_text(session: GameSession) -> str:
+    c = session.state.player
+    lines = [f"{i}. {it.name}×{it.qty} 价值{it.value}gp{(' [' + it.effect + ']') if it.effect else ''} —— {it.desc}"
+             for i, it in enumerate(c.inventory, 1)]
+    return ("背包(装备与附魔都会记在这里):\n" + "\n".join(lines) + f"\n金币:{c.gp} gp") if lines else f"背包空空。金币:{c.gp} gp"
+
+
 def advance_scene(session: GameSession, scene_id: str) -> Message | None:
-    """场景推进:换场景时返回 DM 的入场白。"""
-    scene = SCENARIO["scenes"].get(scene_id)
+    """场景推进:换场景时追加 DM 入场白(只在世界声明过的大分支上允许)。"""
+    world = session.state.world
+    scene = world.scenes.get(scene_id)
     if not scene:
         return None
     session.state.scene_id = scene_id
-    return add_message(
-        session,
-        "story",
-        "dm",
-        scene.get("entry", ""),
-        {"scene_id": scene_id},
-    )
+    session.state.events.append(f"推进到「{scene['name']}」大分支")
+    return add_message(session, "story", "dm", scene.get("entry", ""), {"scene_id": scene_id})

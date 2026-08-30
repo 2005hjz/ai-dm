@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>AI-DM · 赛博跑团引擎</title>
+<title>AI-DM · D&D 5e 单人 TRPG 智能主持</title>
 <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
   <main class="chat">
     <header class="chat-head">
       <div>
-        <h1 id="session-title">《雾中孤儿院》</h1>
+        <h1 id="session-title">《风铃镇·灰烬墓穴》</h1>
         <p class="sub" id="session-meta">连接引擎中…</p>
       </div>
       <div class="badges">
@@ -23,7 +23,7 @@
     <div id="messages" class="messages"></div>
     <form id="send-form" class="sendbar" autocomplete="off">
       <span class="prompt">▍</span>
-      <input id="input" type="text" placeholder="描述你的行动，如「我检查那扇锈铁门」（斜杠指令：/roll /check /scene /hp /help）" />
+      <input id="input" type="text" placeholder="描述行动如「我检查铺门口的悬赏」｜先 /char 1 创建角色｜/check 感知 DC｜/roll /inv /hp /sell /rest｜/help" />
       <button id="send" type="submit">发送</button>
     </form>
   </main>
@@ -42,10 +42,19 @@
     </section>
 
     <section class="card sheet">
-      <h2>调查员</h2>
-      <p id="player-name-display">无名调查员</p>
+      <h2>角色卡 · D&D 5e</h2>
+      <p id="player-name-display">无名冒险者</p>
+      <p class="mini" id="char-line">—</p>
       <div class="hp" id="hp-bar"></div>
-      <p class="mini">可用技能：侦查 · 推理 · 交涉 · 潜行 · 体能 · 医疗 · 科技</p>
+      <p class="mini" id="xp-line">—</p>
+      <p class="mini" id="gp-line">—</p>
+      <div id="abil-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>背包与法术</h2>
+      <div id="inv-list"></div>
+      <p class="mini" id="spell-line">法术:无</p>
     </section>
 
     <section class="card">

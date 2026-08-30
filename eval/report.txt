@@ -1,8 +1,8 @@
-轨迹 6 条;断言 17/17 通过,失败 0;通过率 100.0%
+轨迹 7 条;断言 19/19 通过,失败 0;通过率 100.0%
 
 == tr-01 新会话开场 [PASS] ==
   [ok] setup: 场景 prologue
-  [ok] 开场包含 ['铁门', '雾']
+  [ok] 开场包含 ['风铃镇', '悬赏']
   [ok] 存在系统消息
 
 == tr-02 掷骰指令 [PASS] ==
@@ -15,7 +15,7 @@
   [ok] 产生 check 消息
   [ok] 检定窗口包含 ['DC']
   [ok] 检定统计等于期望
-  [ok] 结构化 meta 检定裁决有效 (degree=大成功, dc=10)
+  [ok] 结构化 meta 检定裁决有效 (degree=失败, dc=12)
 
 == tr-04 自由行动实时响应 [PASS] ==
   [ok] setup: 场景 prologue
@@ -24,6 +24,10 @@
 == tr-06 提示词注入拦截 [PASS] ==
   [ok] setup: 场景 prologue
   [ok] 守卫拦截命中(角色内化解)
+
+== tr-05 D&D 5e 角色创建向导 [PASS] ==
+  [ok] setup: 场景 prologue
+  [ok] 角色卡:种族=人类 职业=法师 等级=1
 
 == tr-07 超长输入被拒绝 [PASS] ==
   [ok] setup: 场景 prologue

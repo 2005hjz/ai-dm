@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # AI 赛博 DM 与无限跑团/剧本杀引擎 (AI-DM & Immersive RPG Engine)
 
 > 基于 DeepSeek-V4-Flash / 硅基流动等 OpenAI 兼容接口，由 AI 实时扮演跑团主持人(DM):对玩家的**自由指令**当场判决、对随机骰子检定做统一数值裁决、按玩家行动演进**大剧情分支**，并调用生图 API 渲染场景卡与 NPC 画像。
@@ -204,7 +203,3 @@ AGENTS.md  .rules  pyproject.toml
 ## 11. License
 
 MIT(发布时附 `LICENSE` 文件)。禁止将 `.env.example` 之外的真实密钥入库。
-=======
-# ai-dm
-小学期项目
->>>>>>> dea3f412b0c37f526b60cb8a7640513cc8c514d9

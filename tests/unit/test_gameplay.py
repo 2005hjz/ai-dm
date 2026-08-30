@@ -10,17 +10,20 @@ def test_start_session_seed_state():
     sess = start_session(new_id(), player_name="阿梅")
     assert sess.state.player.name == "阿梅"
     assert sess.state.scene_id == "prologue"
-    assert sess.state.npcs["keeper"]["name"] == "老赵"
+    assert sess.state.npcs["smith"]["name"] == "老格"
     assert any(m.kind == "system" for m in sess.messages)
     assert sess.stats["rolls"] == 0
 
 
 def test_run_check_seeded_success_failure():
     sess = start_session(new_id())
-    ok = run_check(sess, "侦查", seed=42)
-    assert ok.skill == "侦查"
+    ok = run_check(sess, "感知", seed=42)
+    assert ok.ability == "感知"
+    assert ok.value == 10  # 默认角色属性 10
+    assert ok.modifier == 0  # 无熟练时修正=属性修正
+    assert ok.dc == 12  # 引擎按上下文给默认 DC
     assert ok.success is True or ok.success is False
-    assert ok.total == ok.roll.total
+    assert ok.total == ok.roll.total + ok.modifier
     assert ok.degree in ("大成功", "成功", "失败", "大失败")
     assert sess.stats["checks"] == 1
     assert sess.stats["rolls"] == 1
@@ -28,9 +31,41 @@ def test_run_check_seeded_success_failure():
 
 def test_run_check_dc_override():
     sess = start_session(new_id())
-    res = run_check(sess, "侦查", dc_override=25, seed=3)
+    res = run_check(sess, "感知", dc_override=25, seed=3)
     assert res.dc == 25
     assert res.success is False
+
+
+def test_run_check_xp_on_success():
+    sess = start_session(new_id())
+    res = run_check(sess, "感知", dc_override=1, seed=42)  # 极低DC保证命中奖励经验
+    assert res.success is True
+    assert res.xp > 0
+    assert sess.state.player.xp == res.xp
+    assert sess.stats["xp"] == res.xp
+
+
+def test_run_check_xp_levels_up():
+    sess = start_session(new_id())
+    c = sess.state.player
+    c.level = 1
+    res = run_check(sess, "感知", dc_override=15, seed=99)
+    if res.success:
+        assert c.level >= 1 and c.prof_bonus >= 2
+        assert c.max_hp > 10
+
+
+def test_run_check_skill_maps_to_ability():
+    sess = start_session(new_id())
+    res = run_check(sess, "推理")
+    assert res.ability in ("智力", "感知")
+
+
+def test_default_char_start():
+    sess = start_session(new_id())
+    assert sess.state.player.name != ""
+    assert sess.state.world.title == "《风铃镇·灰烬墓穴》"
+    assert sess.state.world.npcs.get("smith") is not None
 
 
 def test_apply_roll_command():
@@ -81,7 +116,7 @@ def test_apply_command_returns_none_for_free_action():
 
 def test_advance_scene():
     sess = start_session(new_id())
-    msg = advance_scene(sess, "hallway")
-    assert sess.state.scene_id == "hallway"
+    msg = advance_scene(sess, "forest")
+    assert sess.state.scene_id == "forest"
     assert msg is not None
     assert advance_scene(sess, "not-exist") is None

@@ -42,11 +42,11 @@ def step_scene_start(context, scene):
     assert full["session"]["state"]["scene_id"] == scene
 
 
-@step("返回的问候中包含铁门与雾的叙事")
+@step("返回的问候中包含风铃镇与悬赏的叙事")
 def step_greeting_narrative(context):
     full = _get_session(context)
     texts = "".join(m["content"] for m in full["messages"])
-    assert "铁门" in texts and "雾" in texts
+    assert "风铃镇" in texts and "悬赏" in texts
 
 
 @step("会话中有一条系统指令消息")

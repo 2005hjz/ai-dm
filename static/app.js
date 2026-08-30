@@ -21,9 +21,17 @@ const els = {
   npcList: document.getElementById("npc-list"),
   eventLog: document.getElementById("event-log"),
   meta: document.getElementById("session-meta"),
+  charLine: document.getElementById("char-line"),
+  xpLine: document.getElementById("xp-line"),
+  gpLine: document.getElementById("gp-line"),
+  abilList: document.getElementById("abil-list"),
+  invList: document.getElementById("inv-list"),
+  spellLine: document.getElementById("spell-line"),
   branchTree: document.getElementById("branch-tree"),
   btnBranches: document.getElementById("btn-branches"),
 };
+
+const AB_CN = { strength: "力量", dexterity: "敏捷", constitution: "体质", intelligence: "智力", wisdom: "感知", charisma: "魅力" };
 
 let sessionId = null;
 let streaming = false;
@@ -64,11 +72,30 @@ function refreshSidebar(s) {
   els.statFail.textContent = s.stats.checks_failed;
   // HP 条
   els.hpBar.innerHTML = "";
-  for (let i = 0; i < st.max_hp; i++) {
+  for (let i = 0; i < (st.max_hp || 0); i++) {
     const c = document.createElement("i");
-    if (i < st.hp) c.className = "on";
+    if (i < (st.hp || 0)) c.className = "on";
     els.hpBar.appendChild(c);
   }
+  // D&D 角色卡
+  els.charLine.textContent = (st.race || "未建卡") + " · " + (st.klass || "—") + " · " + (st.background || "—") + " · " + (st.birthplace || "—");
+  els.xpLine.textContent = "经验 " + (st.xp || 0) + " XP · 等级 L" + (st.level || 1) + " · 熟练加值 +" + (st.prof_bonus || 2);
+  els.gpLine.textContent = "金币 " + (st.gp || 0) + " gp";
+  els.abilList.innerHTML = st.abilities
+    ? Object.entries(st.abilities)
+        .map(([k, v]) => `<span class="abil">${AB_CN[k] || k} ${v}</span>`)
+        .join(" ")
+    : "";
+  els.invList.innerHTML = st.inventory && st.inventory.length
+    ? st.inventory
+        .map((i) => `<div class="inv-item">${i.name}×${i.qty || 1}${i.effect ? " [" + i.effect + "]" : ""}</div>`)
+        .join("")
+    : '<div class="dim">背包空空（用 /sell 编号 出售物品）</div>';
+  const slots = Object.entries(st.spell_slots || {})
+    .map(([k, v]) => k + "环×" + v)
+    .join(" ");
+  const prepared = (st.spells || []).filter((s) => s.prepared).map((s) => s.name).join("、") || "无";
+  els.spellLine.textContent = "法术位 " + (slots || "无") + " · 已准备 " + prepared;
   // NPC
   els.npcList.innerHTML = "";
   for (const n of st.npcs || []) {

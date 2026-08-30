@@ -1,14 +1,14 @@
-"""剧本世界设定：只保留【大剧情分支】元数据，不含任何离线预先写定的剧情台词 / 推进链 / 检定映射。
+"""剧本世界设定:D&D 5e 默认世界大纲 —— 只含【世界骨架/大分支】元数据,不含预写对话链。
 
-剧情演进完全由 DM（DeepSeek-V4-Flash / 任何 OpenAI 兼容 LLM）按玩家实时自由指令判决：
-- LLM 建议哪个大分支 → 在 `DMPlan.advance_scene` 填对应 zone id，引擎仅做合法性校验 + 场景卡渲染；
-- 骰子检定由引擎按统一规则实时裁决（见 `gameplay.run_check`）；
-- 生图 API / 本地 SVG mock 按本文的场景氛围与 NPC 设定渲染场景卡与角色画像。
+剧本(WorldOutline)与角色卡互不绑定;玩家可导入自定规则文本,也可靠 SSE 进度生成世界大纲。
+剧情演进由 DM(LLM)按玩家实时自由指令每一轮裁决。
 """
 
 from __future__ import annotations
 
 import base64
+
+from .models import WorldOutline
 
 
 def _b64(svg: str) -> str:
@@ -48,102 +48,91 @@ def _svg_npc(name: str, hair: str, cloth: str) -> str:
 
 
 SCENARIO = {
-    "id": "mist-orphanage",
-    "title": "《雾中孤儿院》",
-    "genre": "悬疑 · 微恐 · 无限分支跑团",
-    "skills": ["侦查", "推理", "交涉", "潜行", "体能", "医疗", "科技"],
+    "id": "sunbell-ash-tomb",
+    "title": "《风铃镇·灰烬墓穴》",
+    "genre": "剑与魔法 · D&D 5e · 悬疑冒险",
+    "setting": "凯旋大陆,旧帝国崩塌已百年,刀剑与魔法并存,巨龙沉睡于山脉,诸城自治。冒险者公会遍布,悬赏与传说就是通行的货币。",
+    "mainline": "铁匠老格的女儿蕾拉接连失踪,镇上夜里钟声常无故自鸣。线索指向镇外黑松森林与其中的「灰烬墓穴」——墓穴深处封印着缚灵·残响,它正以活人精魄续命,钟声与失踪案都是它的手笔。",
+    "rules_text": (
+        "D&D 5e 基础规则:行动用 d20 属性检定(1-20),检定值=d20+属性修正(+熟练加值),达到 DC 即成功;"
+        "难度由 DM 依剧情设定(简单5/普通10/困难15/挑战20/极难25);成功检定奖励经验;HP 归零倒地,长休回满;"
+        "法术按环使用法术位,长休回复;战斗各轮由 DM 裁决。"
+    ),
+    "birthplaces": {
+        "孤儿院": "你在镇上的圣礼孤儿院长大,熟悉每一条巷子与密道。",
+        "绿野农庄": "你在北边农庄长大,熟悉荒野、牲畜与天气。",
+        "北境商队": "你随商队长大,见多识广,擅长议价与认路。",
+        "圣白城教会": "你被修士抚养长大,熟读经文与古代史。",
+        "德鲁伊林地": "你在林间长大,与自然和野兽为伴。",
+        "码头街": "你在码头街讨生活,嘴皮子利索,消息灵通。",
+    },
     "npcs": {
-        "keeper": {
-            "npc_id": "keeper",
-            "name": "老赵",
-            "title": "守夜人",
-            "desc": "佝偻着背，叼着半截烟，对访客戒心很重。",
-            "relation": 0,
-            "hp": 3,
-            "portrait": _svg_npc("老赵", "#4a4a4a", "#c25a5a"),
-        },
-        "ghost": {
-            "npc_id": "ghost",
-            "name": "白影",
-            "title": "廊道尽头的鬼影",
-            "desc": "一个矮小的白色人形，头发遮住了大半张脸。",
-            "relation": 0,
-            "hp": 3,
-            "portrait": _svg_npc("白影", "#dddddd", "#e6e6ea"),
-        },
+        "mayor": {"npc_id": "mayor", "name": "马瑞卡", "title": "镇长", "desc": "银发中年妇人,眉间总锁着担忧,不愿多谈失踪案背后的风声。", "relation": 10, "hp": 8, "portrait": _svg_npc("马瑞卡", "#e0e0e0", "#7a4f9c")},
+        "smith": {"npc_id": "smith", "name": "老格", "title": "铁匠", "desc": "粗粝的手掌,满身炉灰,悬赏就贴在自己的铺子门口。", "relation": 15, "hp": 12, "portrait": _svg_npc("老格", "#5b4a39", "#8a4b2f")},
+        "barmaid": {"npc_id": "barmaid", "name": "雪梨", "title": "酒馆老板娘", "desc": "精明圆滑,把各路人马的闲话都装进耳朵里。", "relation": 5, "hp": 6, "portrait": _svg_npc("雪梨", "#4a1a1a", "#c25a5a")},
+        "priest": {"npc_id": "priest", "name": "塞拉斯", "title": "神殿祭司", "desc": "清瘦,声音沉稳,知道墓穴封印的部分真相。", "relation": 10, "hp": 8, "portrait": _svg_npc("塞拉斯", "#dddddd", "#e6e6ea")},
+        "crow": {"npc_id": "crow", "name": "乌鸦", "title": "神秘旅人", "desc": "斗篷遮脸,只在夜里出现,话里常带半句预言。", "relation": 0, "hp": 10, "portrait": _svg_npc("乌鸦", "#222222", "#2c2c34")},
+        "leila": {"npc_id": "leila", "name": "蕾拉", "title": "失踪的铁匠之女", "desc": "金发少女,最后被人看见是三天前走进黑松森林。", "relation": 0, "hp": 6, "portrait": _svg_npc("蕾拉", "#d8a91b", "#4a7a8c")},
     },
-    # 大剧情分支（剧本地图 zone）：仅描述「这是一个怎样的空间」，不含任何玩家台词挂钩。
-    # 玩家具体怎么演、分支间怎么走动、要不要检定，全部由 DM 在当轮实时判决。
     "scenes": {
-        "prologue": {
-            "id": "prologue",
-            "name": "铁门之外",
-            "is_start": True,
-            "entry": (
-                "1998年，东南沿海，一座废弃近二十年的孤儿院，静静埋在终年不散的浓雾里。\n"
-                "你是收到匿名信赴约的调查员。信上只有一行字：【7号房，有人等你。】\n"
-                "你站在锈迹斑斑的铁门前。门缝里泄出昏黄的灯光，似乎……有人？"
-            ),
-            "desc": "铁门半掩，雾里隐约能看见主楼的轮廓，二楼某扇窗户亮着灯。",
-        },
-        "hallway": {
-            "id": "hallway",
-            "name": "主楼走廊",
-            "entry": (
-                "主楼内墙皮剥落，吊灯在头顶忽明忽暗。左右延伸的走廊尽头埋进雾气。\n"
-                "墙上挂着一排褪色合影，尽头是通往楼上的螺旋楼梯。"
-            ),
-            "desc": "一眼望不到头的走廊，灯忽明忽暗，楼梯隐没在雾气里。",
-        },
-        "room7": {
-            "id": "room7",
-            "name": "7号房",
-            "entry": (
-                "推开【7号房】的门，房间里只有一张床、一扇封死的窗户，和地板中央一只小小的白布鞋。\n"
-                "空气里浮着极淡的、被刻意藏过的呼吸声。"
-            ),
-            "desc": "空荡的儿童房，窗玻璃蒙着雾，地板中央躺着一只孤零零的白布鞋。",
-        },
-        "basement": {
-            "id": "basement",
-            "name": "地下室",
-            "entry": (
-                "楼梯尽头的门后是潮湿的地下室。铁架上摆满蒙灰的旧药瓶，墙角摊着一盒泛黄的剪报。\n"
-                "守夜人老赵坐在那里，抬起头，目光里没有害怕，只有疲惫。"
-            ),
-            "desc": "潮湿的地下室，铁架上摆满旧药瓶，墙角散落一摊剪报。",
-        },
-        "end": {
-            "id": "end",
-            "name": "结局 · 雾散",
-            "is_terminal": True,
-            "entry": (
-                "清晨五点半，雾终于散了。孤儿院在晨光里变得安静而普通。\n你走出铁门，回头看，那盏亮了一夜的灯已经熄了。"
-            ),
-            "desc": "雾散尽，晨光落在空荡荡的孤儿院前，世界重新明亮。",
-        },
+        "prologue": {"id": "prologue", "name": "风铃镇广场", "is_start": True, "entry": (
+            "深秋的傍晚,风铃镇集市收了摊。铁匠老格铺门口的悬赏在风里扑打:女儿蕾拉三天前走进黑松森林,至今未归。\n"
+            "你站在广场的水井旁,手里攥着冒险者公会的简章。雾从镇外的森林边缘漫过来,掩住钟楼,只有风铃在响。\n——你的冒险,从这一刻开始。"
+        ), "desc": "广场中央一口老水井,铁匠铺、酒馆与神殿围成一圈,钟楼隐在雾里。"},
+        "market": {"id": "market", "name": "酒馆·铃铛与玫瑰", "entry": (
+            "酒馆里暖光混着麦酒味。老板娘雪梨把闲话当酒卖:『前天有个斗篷人打听灰烬墓穴的事,出手就是金币。』\n你可以在酒馆打听消息、雇佣帮手、出售或交换装备。"
+        ), "desc": "一楼大厅座无虚席,墙上钉满悬赏与旧地图。"},
+        "forest": {"id": "forest", "name": "黑松森林", "entry": (
+            "林子里光线被树冠削成碎斑,地面松针叠着旧脚印。远处墓穴方向传来一声不似狼嚎的低响。\n夜风里夹着铁锈与蜡的气味——灰烬墓穴,就在林深之处。"
+        ), "desc": "浓密黑松遮天,雾在树根之间流淌,一条被踏平的旧路指向墓穴。"},
+        "tomb": {"id": "tomb", "name": "灰烬墓穴", "entry": (
+            "石门上镌着旧王朝的封印纹,门缝里漏出暗红色光。地上散落着被拖行的痕迹与一块蕾拉的银发带。\n深处,隐约有一种「钟声」,在无人敲击地响着。"
+        ), "desc": "潮湿甬道两侧是空棺架,暗红光来自最深处的神殿方向。"},
+        "sanctum": {"id": "sanctum", "name": "墓穴神殿", "entry": (
+            "祭坛上,缚灵·残响以黑雾塑形,蕾拉昏睡在它脚边的法阵中,周围的烛火随它呼吸明灭。\n『迟到的勇者,』它开口,『要么献上你的精魄,要么,带她走。』"
+        ), "desc": "穹顶破开一线天光,祭坛四角燃着蓝焰,法阵在地上缓缓旋转。"},
+        "end": {"id": "end", "name": "结局·黎明的钟声", "is_terminal": True, "entry": (
+            "缚灵在晨光里碎裂成灰烬。蕾拉睁开眼睛,第一句话是『谢谢』。\n镇上的钟声终于正常地敲响了——为平安,也为远行者。你的第一个冒险,就此画上句号。"
+        ), "desc": "雾散,日光落在灰烬与晨露之上,冒险者公会的印章盖在你的冒险简报上。"},
     },
-    # 大剧情分支（从哪个 zone 可以走到哪些 zone）——渲染分支树 + 注入 DM 系统提示词。
     "branches": {
         "prologue": [
-            {"target": "hallway", "label": "推开主楼大门，进入走廊探索"},
-            {"target": "room7", "label": "循着匿名信直接走向7号房"},
+            {"target": "market", "label": "进酒馆打听消息"},
+            {"target": "forest", "label": "直奔黑松森林"},
         ],
-        "hallway": [
-            {"target": "room7", "label": "走进钉着褪色门牌的7号房"},
-            {"target": "basement", "label": "沿螺旋楼梯下到地下室"},
+        "market": [{"target": "forest", "label": "酒后出发,入林追查"}],
+        "forest": [
+            {"target": "tomb", "label": "循旧路深入灰烬墓穴"},
+            {"target": "prologue", "label": "返回小镇修整补给"},
         ],
-        "room7": [
-            {"target": "basement", "label": "追查真相，逼问守夜人/查阅地下室剪报"},
-            {"target": "end", "label": "给出你的裁决，迎来雾散结局"},
+        "tomb": [
+            {"target": "sanctum", "label": "走进墓穴神殿对阵缚灵"},
+            {"target": "forest", "label": "暂退林间重整旗鼓"},
         ],
-        "basement": [
-            {"target": "end", "label": "真相揭晓，迎来雾散结局"},
-        ],
+        "sanctum": [{"target": "end", "label": "击败缚灵,迎黎明的结局"}],
         "end": [],
     },
-    # 大剧情分支的展示顺序（用于分支树 / 预热渲染的顺序）。
-    "scene_order": ["prologue", "hallway", "room7", "basement", "end"],
+    "scene_order": ["prologue", "market", "forest", "tomb", "sanctum", "end"],
+    "encounters": ["黑松林的饿狼群", "灰烬墓穴的食腐尸怪", "想独吞悬赏的赏金猎人", "墓穴神殿的缚灵·残响"],
 }
 
 SCENARIO["scene_images"] = {sc["id"]: _svg_scene(sc["name"]) for sc in SCENARIO["scenes"].values()}
+
+
+def default_world() -> WorldOutline:
+    """由默认剧本字典构造 WorldOutline(会话默认世界)。"""
+    return WorldOutline(
+        id=SCENARIO["id"],
+        title=SCENARIO["title"],
+        genre=SCENARIO["genre"],
+        setting=SCENARIO["setting"],
+        mainline=SCENARIO["mainline"],
+        rules_text=SCENARIO["rules_text"],
+        birthplaces=dict(SCENARIO["birthplaces"]),
+        npcs={k: dict(v) for k, v in SCENARIO["npcs"].items()},
+        scenes={k: dict(v) for k, v in SCENARIO["scenes"].items()},
+        scene_order=list(SCENARIO["scene_order"]),
+        scene_images=dict(SCENARIO["scene_images"]),
+        branches={k: [dict(b) for b in v] for k, v in SCENARIO["branches"].items()},
+        encounters=list(SCENARIO["encounters"]),
+    )

@@ -65,9 +65,9 @@ def test_parse_dm_plan_valid_json():
 
 
 def test_parse_dm_plan_fenced_json():
-    raw = '```json\n{"narrative": "门开了。", "check": null, "advance_scene": "hallway", "triggers": []}\n```'
+    raw = '```json\n{"narrative": "门开了。", "check": null, "advance_scene": "forest", "triggers": []}\n```'
     plan = parse_dm_plan(raw)
-    assert plan.advance_scene == "hallway"
+    assert plan.advance_scene == "forest"
     assert plan.check is None
 
 
@@ -77,6 +77,17 @@ def test_parse_dm_plan_invented_scene_rejected():
     plan = parse_dm_plan(raw)
     assert plan.advance_scene is None
     assert plan.narrative == "你走进一个不存在的空间。"
+
+
+def test_parse_dm_plan_loot_gold_and_ability():
+    raw = (
+        '{"narrative": "你捡起一把剑。", "check": {"ability": "力量", "dc": 10}, '
+        '"loot": [{"name": "火焰大剑", "effect": "火焰+1d4伤害", "value": 60}], "gold": 10, "hp": -2}'
+    )
+    plan = parse_dm_plan(raw)
+    assert plan.check.ability == "力量" if plan.check else False
+    assert plan.loot[0].name == "火焰大剑" if plan.loot else False
+    assert plan.gold == 10 and plan.hp == -2
 
 
 def test_parse_dm_plan_garbage_falls_back():
@@ -91,15 +102,15 @@ def test_propose_or_resolve_advance_whitelisted_branch(monkeypatch):
         import app.providers as p
 
         sess = start_session(new_id())
-        plan = DMPlan(narrative="铁门在你身后合拢。", advance_scene="hallway", triggers=["branch"])
+        plan = DMPlan(narrative="风铃镇的钟声在背后响起。", advance_scene="market", triggers=["branch"])
         monkeypatch.setattr(p, "get_llm_provider", lambda: _FakeDM(plan))
-        res = await propose_or_resolve(sess, "我推开主楼大门走进走廊")
+        res = await propose_or_resolve(sess, "我走进酒馆·铃铛与玫瑰")
         return res, sess
 
     res, sess = asyncio.run(run())
     assert res["advanced"] is True
     assert res["advance_dm_text"]
-    assert sess.state.scene_id == "hallway"
+    assert sess.state.scene_id == "market"
     assert any("推进" in e for e in sess.state.events)
 
 
@@ -110,13 +121,13 @@ def test_propose_or_resolve_blocks_undeclared_advance(monkeypatch):
         import app.providers as p
 
         sess = start_session(new_id())
-        plan = DMPlan(narrative="雾里没有那样的门。", advance_scene="end" if False else "basement")
+        plan = DMPlan(narrative="雾里没有那样的入口。", advance_scene="tomb", triggers=["branch"])
         monkeypatch.setattr(p, "get_llm_provider", lambda: _FakeDM(plan))
-        res = await propose_or_resolve(sess, "我直接跑去地下室")
+        res = await propose_or_resolve(sess, "我直接冲进灰烬墓穴")
         return res, sess
 
     res, sess = asyncio.run(run())
-    # prologue 声明的分支是 hallway/room7 → basement 未声明,推进被拦
+    # prologue 声明的分支是 market/forest → tomb 未声明,推进被拦
     assert res["advanced"] is False
     assert sess.state.scene_id == "prologue"
 
@@ -139,8 +150,9 @@ def test_propose_or_resolve_check_numeric_adjudication(monkeypatch):
     res, sess = asyncio.run(run())
     check = res["check"]
     assert check is not None
-    assert check.skill == "侦查"
+    assert check.ability == "感知"  # 侦查 → 感知(Wisdom)
     assert check.dc == 10
+    assert check.value == 10
     assert check.success is True or check.success is False
     assert res["advanced"] is False
     assert sess.stats["checks"] == 1

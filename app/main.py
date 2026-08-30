@@ -1,4 +1,4 @@
-"""FastAPI 入口:会话管理 + REST 指令 + SSE 流式 DM 剧情 + 剧情分支树端点。
+"""FastAPI 入口:会话管理 + REST 指令 + SSE 流式 DM 剧情 + 世界大纲(SSE 进度)+ 大分支树端点。
 
 启动:
     uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -7,7 +7,7 @@
 - 全局异常处理(500 → 结构化 JSON,日志脱敏)
 - 输入校验(safety.sanitize_input)+ 提示词防护(safety.scan_guardrails)
 - 滑动窗口频控(rate_limit.SlidingWindowRateLimiter)
-- 图片生成失败回退 mock、LLM 调用失败回退 mock
+- LLM/生图失败自动回退 mock,主流程永不中断
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, persistence, safety, storage
 from .gameplay import add_message, apply_command, start_session
-from .providers import get_image_provider, get_llm_provider, propose_or_resolve
+from .models import WorldOutline
+from .providers import generate_world_outline, get_image_provider, get_llm_provider, propose_or_resolve
 from .rate_limit import SlidingWindowRateLimiter
 from .safety import InputValidationError
 from .scenario import SCENARIO
@@ -32,16 +33,15 @@ logger = logging.getLogger("ai_dm")
 BASE_DIR = config.BASE_DIR
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="AI-DM · 赛博跑团引擎", version="1.0.0")
-_limiter: SlidingWindowRateLimiter | None = None  # 在启动钩子中初始化,便于测试注入
+app = FastAPI(title="AI-DM · D&D 5e 单人 TRPG 智能主持", version="2.0.0")
+_limiter: SlidingWindowRateLimiter | None = None
 
 
 @app.on_event("startup")
 async def _startup() -> None:
     global _limiter
-    if _limiter is None:  # 测试可先行注入宽松限流,避免被重置
+    if _limiter is None:
         _limiter = SlidingWindowRateLimiter()
-    # 预热:远程生图在后台缓存场景卡 / NPC 头像,避免首次会话卡顿
     img = get_image_provider()
     if img.name == "remote":
         asyncio.get_running_loop().create_task(_prewarm_images())
@@ -49,7 +49,6 @@ async def _startup() -> None:
 
 @app.exception_handler(InputValidationError)
 async def _input_validation_handler(request: Request, exc: Exception) -> JSONResponse:
-    """输入校验失败 → 422 结构化错误(而非 500)。"""
     return JSONResponse({"error": str(exc)}, status_code=422)
 
 
@@ -76,40 +75,64 @@ async def _public_image(entity: str) -> str:
     return await asyncio.to_thread(img.npc_portrait, entity)
 
 
-async def _public_session(sess) -> dict:
-    """给前端用的会话快照,去掉超长历史,附上场景卡/NPC 画像(异步取图)。"""
-    scene_id = sess.state.scene_id
-    scene_name = SCENARIO["scenes"].get(scene_id, {}).get("name", scene_id)
+def _char_brief(sess) -> dict:
+    p = sess.state.player
     return {
-        "id": sess.id,
-        "title": sess.title,
-        "scene": {"id": scene_id, "name": scene_name, "image": await _public_image(scene_id)},
-        "state": {
-            "player": sess.state.player.name,
-            "hp": sess.state.player.hp,
-            "max_hp": sess.state.player.max_hp,
+        "player": p.name,
+        "race": p.race,
+        "klass": p.klass,
+        "background": p.background,
+        "birthplace": p.birthplace,
+        "level": p.level,
+        "xp": p.xp,
+        "hp": p.hp,
+        "max_hp": p.max_hp,
+        "gp": p.gp,
+        "prof_bonus": p.prof_bonus,
+        "abilities": {k: getattr(p.abilities, k) for k in ("strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma")},
+        "skills": list(p.skills),
+        "sav_throws": list(p.sav_throws),
+        "spell_slots": dict(p.spell_slots),
+        "spells": [s.model_dump() for s in p.spells],
+        "inventory": [i.model_dump() for i in p.inventory],
+    }
+
+
+async def _public_session(sess) -> dict:
+    """给前端用的会话快照:角色卡摘要 + 场景卡/NPC 画像。"""
+    scene_id = sess.state.scene_id
+    scene_name = sess.state.world.scenes.get(scene_id, {}).get("name", scene_id)
+    base = _char_brief(sess)
+    base.update(
+        {
             "turn": sess.state.turn,
             "scene_id": scene_id,
+            "phase": sess.state.phase or "",
             "npcs": [
                 {
                     "id": n["npc_id"],
                     "name": n["name"],
-                    "title": n["title"],
+                    "title": n.get("title", ""),
                     "relation": n.get("relation", 0),
                     "portrait": await _public_image(n["npc_id"]),
                 }
                 for n in sess.state.npcs.values()
             ],
             "flags": dict(sess.state.flags),
-            "events": list(sess.state.events[-6:]),
-        },
+            "events": list(sess.state.events[-8:]),
+        }
+    )
+    return {
+        "id": sess.id,
+        "title": sess.title,
+        "scene": {"id": scene_id, "name": scene_name, "image": await _public_image(scene_id)},
+        "state": base,
         "stats": dict(sess.stats),
         "providers": {"llm": get_llm_provider().name, "image": get_image_provider().name},
     }
 
 
 def _sync_metrics(sess) -> None:
-    """把会话统计同步写入 SQLite 遥测(session_metrics)。"""
     if config.TELEMETRY_ENABLED:
         st = sess.state
         try:
@@ -129,14 +152,12 @@ def _sync_metrics(sess) -> None:
                 created_at=sess.created_at,
                 updated_at=sess.updated_at,
             )
-        except Exception as exc:  # 遥测失败不影响主流程
+        except Exception as exc:
             logger.warning("telemetry upsert failed: %s", exc)
 
 
-# ---------------------------------------------------------------- 全局中间件
 @app.middleware("http")
 async def _rate_limit_and_error_handler(request: Request, call_next):
-    # 频控
     if _limiter is not None and request.url.path.startswith("/api"):
         key = request.client.host if request.client else "unknown"
         ok, _remaining = _limiter.allow(key)
@@ -151,7 +172,7 @@ async def _rate_limit_and_error_handler(request: Request, call_next):
         return JSONResponse({"error": "服务内部错误,请稍后重试"}, status_code=500)
 
 
-# ---------------------------------------------------------------- REST 路由
+# ---------------------------------------------------------------- 静态页 & 健康检查
 @app.get("/")
 async def index():
     return FileResponse(STATIC_DIR / "index.html")
@@ -169,6 +190,59 @@ async def health():
     }
 
 
+# ---------------------------------------------------------------- 世界大纲(剧本)
+WORLD_STAGES = ["解析玩家描述", "构思世界观", "编排主线", "塑造NPC", "设计遭遇与场景", "合成世界大纲"]
+
+
+@app.get("/api/worlds")
+async def list_worlds():
+    return [w.get("id") and {"id": w.id, "title": w.title, "genre": w.genre} for w in persistence.list_worlds()]
+
+
+@app.post("/api/worlds")
+async def create_world(payload: dict):
+    """导入/自建剧本:规则文本由玩家提供,角色与剧本互不绑定。"""
+    title = safety.sanitize_input((payload or {}).get("title") or "")[:40]
+    setting = safety.sanitize_input((payload or {}).get("setting") or "")[:400]
+    rules_text = safety.sanitize_input((payload or {}).get("rules_text") or "")[:1000]
+    world = WorldOutline(id=persistence.new_id(), title=title or "自定世界", setting=setting, rules_text=rules_text)
+    persistence.save_world(world)
+    return world.model_dump()
+
+
+@app.get("/api/worlds/{world_id}")
+async def get_world(world_id: str):
+    world = persistence.load_world(world_id)
+    if not world:
+        if world_id == "default":
+            from .scenario import default_world
+
+            world = default_world()
+        else:
+            raise HTTPException(404, "世界不存在")
+    return world.model_dump()
+
+
+@app.post("/api/worlds/generate")
+async def generate_world(payload: dict):
+    """SSE 流式生成世界大纲:按阶段推进度,完成后返回完整 WorldOutline。"""
+    description = safety.sanitize_input((payload or {}).get("description") or "")
+    rules_text = safety.sanitize_input((payload or {}).get("rules_text") or "")[:1000]
+
+    async def gen():
+        for i, stage in enumerate(WORLD_STAGES, 1):
+            yield f"event: progress\ndata: {json.dumps({'step': i, 'total': len(WORLD_STAGES), 'stage': stage}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.12)
+        world = await generate_world_outline(description, rules_text)
+        persistence.save_world(world)
+        yield f"event: done\ndata: {json.dumps({'world': world.model_dump()}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+# ---------------------------------------------------------------- 会话
 @app.get("/api/sessions")
 async def list_sessions():
     return persistence.list_sessions()
@@ -176,10 +250,17 @@ async def list_sessions():
 
 @app.post("/api/sessions")
 async def create_session(payload: dict):
-    player_name = (payload or {}).get("player_name") or "无名调查员"
-    player_name = safety.sanitize_input(player_name)[:20]
+    player_name = safety.sanitize_input((payload or {}).get("player_name") or "")[:20]
+    world_id = (payload or {}).get("world_id") or "default"
     session_id = persistence.new_id()
     sess = start_session(session_id, player_name)
+    if world_id != "default":
+        world = persistence.load_world(world_id)
+        if world:
+            sess.state.world = world
+            sess.title = world.title
+            for npc_id, npc in world.npcs.items():
+                sess.state.npcs[npc_id] = dict(npc)
     persistence.save_session(sess)
     _sync_metrics(sess)
     return await _public_session(sess)
@@ -200,25 +281,27 @@ async def delete_session(session_id: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- 剧本元数据(默认世界)
 @app.get("/api/scenario")
 async def scenario_meta():
-    """剧本元数据:场景清单 / NPC / 技能池。"""
     return {
         "id": SCENARIO["id"],
         "title": SCENARIO["title"],
         "genre": SCENARIO["genre"],
-        "skills": SCENARIO["skills"],
+        "settings": SCENARIO["setting"],
+        "mainline": SCENARIO["mainline"],
+        "birthplaces": [{i + 1: k} for i, k in enumerate(SCENARIO["birthplaces"])],
         "npcs": [{"id": k, "name": v["name"], "title": v.get("title", "")} for k, v in SCENARIO["npcs"].items()],
         "scenes": [
             {"id": s["id"], "name": s["name"], "terminal": bool(s.get("is_terminal"))}
             for s in SCENARIO["scenes"].values()
         ],
+        "encounters": SCENARIO["encounters"],
     }
 
 
 @app.get("/api/scenario/branches")
 async def scenario_branches():
-    """大剧情分支树(顶点 = 大分支 zone,边 = 声明后的大分支走向),供前端可视化。"""
     nodes = [
         {
             "id": s["id"],
@@ -238,7 +321,6 @@ async def scenario_branches():
 
 @app.get("/api/images/{name}")
 async def image_file(name: str):
-    """远程生图缓存文件(disk cache)访问入口。"""
     safe = "".join(c for c in name if c.isalnum() or c in "-_.")
     path = config.IMAGE_CACHE_DIR / safe
     if not path.exists():
@@ -254,7 +336,7 @@ def _append_player_msg(sess, text: str):
 
 @app.post("/api/sessions/{session_id}/command")
 async def command(session_id: str, payload: dict):
-    """斜杠指令(同步返回):/roll /check /scene /hp /help /restart"""
+    """斜杠指令(同步返回):/char /check /roll /hp /gp /inv /spells /sell /rest /scene /help /restart"""
     sess = persistence.load_session(session_id)
     if not sess:
         raise HTTPException(404, "会话不存在")
@@ -265,23 +347,22 @@ async def command(session_id: str, payload: dict):
         raise HTTPException(422, "这不是指令,请走 /chat 自由行动")
     persistence.save_session(updated)
     _sync_metrics(updated)
-    return {"session": await _public_session(updated), "new_messages": [m.model_dump() for m in updated.messages[-6:]]}
+    return {"session": await _public_session(updated), "new_messages": [m.model_dump() for m in updated.messages[-8:]]}
 
 
 @app.post("/api/sessions/{session_id}/chat")
 async def chat(session_id: str, payload: dict):
-    """自由行动:SSE 流式返回 DM 叙述 + 可能的结构化检定 + 场景推进。"""
+    """自由行动:SSE 流式返回 DM 叙述 + 结构化检定 + 场景推进 + 记账。"""
     sess = persistence.load_session(session_id)
     if not sess:
         raise HTTPException(404, "会话不存在")
     text = safety.sanitize_input((payload or {}).get("text", ""))
     guard = safety.scan_guardrails(text)
     _append_player_msg(sess, text)
-    persistence.save_session(sess)  # 先存玩家发言,失败也不丢现场
+    persistence.save_session(sess)
 
     async def gen():
         if guard:
-            # 提示词注入 → 角色内化解,流式输出,不触发 LLM
             yield f"event: token\ndata: {json.dumps({'token': guard}, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.1)
             yield f"event: done\ndata: {json.dumps({'session': await _public_session(sess), 'new_messages': []}, ensure_ascii=False)}\n\n"
@@ -290,63 +371,57 @@ async def chat(session_id: str, payload: dict):
         result = await propose_or_resolve(sess, text)
         dm_text = result["dm_text"]
         check = result.get("check")
-        advanced = result.get("advanced", False)
-        advance_text = result.get("advance_dm_text", "")
+        new_messages: list[dict] = []
 
-        # 主叙述持久化入库(前端走 token 流渲染)
-        dm_msg_dict = {
+        dm_msg = {
             "id": f"story-{persistence.new_id()}",
             "kind": "story",
             "role": "dm",
             "content": dm_text,
             "meta": {"scene_id": sess.state.scene_id},
         }
-        sess.messages.append(_from_dict(dm_msg_dict))
+        sess.messages.append(_from_dict(dm_msg))
+        new_messages.append(dm_msg)
 
-        new_messages: list[dict] = []
-
-        # 1) 流式输出 DM 主叙述
         async for token in get_llm_provider().stream_text(dm_text):
             yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
         await asyncio.sleep(0.15)
 
-        # 2) 结构化检定消息
         if check is not None:
             new_messages.append(
                 {
                     "id": f"check-{persistence.new_id()}",
                     "kind": "check",
                     "role": "dm",
-                    "content": f"「{check.skill}检定」DC={check.dc} → {check.roll.total}",
+                    "content": check.narrative,
                     "meta": {
-                        "degree": check.degree,
+                        "ability": check.ability,
+                        "value": check.value,
+                        "modifier": check.modifier,
                         "dc": check.dc,
-                        "total": check.roll.total,
+                        "total": check.roll.total + check.modifier,
+                        "degree": check.degree,
                         "success": check.success,
-                        "skill": check.skill,
+                        "xp": check.xp,
                     },
                 }
-            )
-            new_messages.append(
-                {"id": f"story-{persistence.new_id()}", "kind": "story", "role": "dm", "content": check.narrative}
             )
             new_messages.append(
                 {
                     "id": f"roll-{persistence.new_id()}",
                     "kind": "roll",
                     "role": "dice",
-                    "content": roll_summary(check.roll),
+                    "content": dice_summary(check.roll),
                 }
             )
-            sess.messages = _append_messages(sess, new_messages)
+            sess.messages = _append_messages(sess, new_messages[-2:])
 
-        # 3) 场景推进 → 追加入场白
-        if advanced and advance_text:
+        if result.get("advanced") and result.get("advance_dm_text"):
             adv = {
                 "id": f"story-{persistence.new_id()}",
                 "kind": "story",
                 "role": "dm",
-                "content": advance_text,
+                "content": result["advance_dm_text"],
                 "meta": {"scene_id": sess.state.scene_id},
             }
             new_messages.append(adv)
@@ -354,11 +429,7 @@ async def chat(session_id: str, payload: dict):
 
         persistence.save_session(sess)
         _sync_metrics(sess)
-        done = {
-            "session": await _public_session(sess),
-            "new_messages": new_messages,
-            "scene_id": sess.state.scene_id,
-        }
+        done = {"session": await _public_session(sess), "new_messages": new_messages, "scene_id": sess.state.scene_id}
         yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -380,7 +451,7 @@ def _append_messages(sess, messages: list[dict]):
     return sess.messages
 
 
-def roll_summary(roll):
+def dice_summary(roll):
     from .dice import summarize
 
     return summarize(roll)
