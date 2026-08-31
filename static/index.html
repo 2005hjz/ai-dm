@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>AI-DM · D&D 5e 单人 TRPG 智能主持</title>
-<link rel="stylesheet" href="/static/style.css" />
+<link rel="stylesheet" href="/static/style.css?v=20240831" />
 </head>
 <body>
 <div class="app">
@@ -46,6 +46,21 @@
       <div id="saved-char-list"><p class="dim">暂无已保存角色</p></div>
     </section>
 
+    <section class="card">
+      <h2>本地存档</h2>
+      <div class="save-bar">
+        <input id="save-name" type="text" placeholder="给这份冒险起个名字(可选)" maxlength="40" />
+        <button id="btn-save-session" type="button" class="mini-btn save-now">保存进度</button>
+      </div>
+      <div class="save-actions">
+        <button id="btn-export-session" type="button" class="mini-btn">导出存档</button>
+        <label class="mini-btn file-btn"
+          >导入存档<input id="file-import" type="file" accept="application/json,.json" hidden /></label
+        >
+      </div>
+      <div id="saved-session-list" class="saved-session-list"><p class="dim">加载本地存档…</p></div>
+    </section>
+
     <section class="card scene-card">
       <h2>当前场景</h2>
       <img id="scene-img" alt="场景卡" />
@@ -81,6 +96,16 @@
     <section class="card">
       <h2>NPC 角色卡</h2>
       <div id="npc-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>冒险者公会 · 任务板</h2>
+      <div id="quest-list"><p class="dim">连接引擎中…</p></div>
+    </section>
+
+    <section class="card">
+      <h2>战斗目标</h2>
+      <div id="combat-target"><p class="dim">无</p></div>
     </section>
 
     <section class="card">
@@ -142,9 +167,10 @@
       </section>
 
       <section class="form-sec">
-        <h3>起始装备(缺省按职业标准包)</h3>
+        <h3>起始装备(按身份与职业自动分配,可在下方补充)</h3>
+        <div id="equip-auto" class="chip-grid"><p class="dim">选择职业与背景后自动分配</p></div>
         <div id="f-inventory"></div>
-        <button type="button" id="btn-add-item" class="mini-btn">＋ 添加物品</button>
+        <button type="button" id="btn-add-item" class="mini-btn">＋ 补充物品</button>
       </section>
 
       <section class="form-sec">
@@ -166,6 +192,6 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20240831"></script>
 </body>
 </html>

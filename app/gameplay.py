@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from . import character, dice, dnd
-from .models import CheckResult, GameSession, Message
+from .models import AttackProposal, AttackResult, CheckResult, GameSession, Item, Message, Quest
 from .persistence import new_id
 
 
@@ -28,6 +28,7 @@ def start_session(session_id: str, player_name: str = "无名冒险者") -> Game
     st.world = dnd_default()
     for npc_id, npc in st.world.npcs.items():
         st.npcs[npc_id] = dict(npc)
+    st.quests = [q.model_copy(deep=True) for q in st.world.quests]
     prologue = st.world.scenes["prologue"]
     sess.messages = [
         Message(
@@ -172,8 +173,10 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
         add_message(session, "system", "system", (
             "/char 创建角色 · /check 感知 [DC] 属性检定(显式数值) · /roll 1d20+3 掷骰\n"
             "/hp 生命 /gp 金币 /inv 背包(含附魔) /spells 法术位 · /sell 编号 出售\n"
-            "/rest 长休(回满HP+法术位) · /damage N /heal N /xp N /loot N\n"
-            "/scene 场景卡 · /restart 重新开始\n自由行动:直接描写角色动作即可。"
+            "/quests 任务板(公会/NPC) · /accept N 接任务 · /complete N 结算任务\n"
+            "/attack [目标] 攻击检定(d20 命中+伤害骰,击杀得经验) · /rest 长休(回满HP+法术位)\n"
+            "/damage N /heal N /xp N /loot N · /scene 场景卡 · /restart 重新开始\n"
+            "自由行动:直接描写角色动作即可。"
         ))
         return session
 
@@ -258,6 +261,38 @@ def apply_command(session: GameSession, text: str) -> GameSession | None:
         add_message(session, "system", "system", f"法术位:{slots} | 已准备:{spells}")
         return session
 
+    if t.lower() == "/quests":
+        add_message(session, "system", "system", _quest_board_text(session))
+        return session
+    m = re.match(r"/(quest|accept)\s+(\d+)", t, re.IGNORECASE)
+    if m:
+        q = _quest_by_number(session, int(m.group(2)), "available")
+        if q is None:
+            add_message(session, "system", "system", "没有找到可接取的任务,先 /quests 查看悬赏板与 NPC 委托。")
+        else:
+            accept_quest(session, q)
+            add_message(session, "system", "system", f"已接受任务【{q.title}】({q.source})——{q.objective}")
+        return session
+    m = re.match(r"/complete\s+(\d+)", t, re.IGNORECASE)
+    if m:
+        q = _quest_by_number(session, int(m.group(1)), "accepted")
+        if q is None or not complete_quest(session, q):
+            add_message(session, "system", "system", "没有可结算的已接受任务,用 /quests 查看。")
+        else:
+            add_message(session, "system", "system", f"任务完成!《{q.title}》奖励 +{q.reward_xp} XP、{q.reward_gp} gp。")
+        return session
+    if t.lower().startswith("/attack"):
+        proposal = None
+        if len(t) > len("/attack") and t[len("/attack"):].strip():
+            proposal = AttackProposal(target=t[len("/attack"):].strip()[:24])
+        res = resolve_attack(session, proposal)
+        if res is None:
+            add_message(session, "system", "system", "当前没有明确的战斗目标——等 DM 开启战斗(敌人出现时),或用 /quests 接取清剿类任务。")
+        else:
+            add_message(session, "combat", "dice", res.narrative, {"target": res.target, "ac": res.ac, "atk_total": res.atk_total, "hit": res.hit, "damage": res.damage_total, "killed": res.killed, "xp": res.xp})
+            session.stats["rolls"] += 1
+        return session
+
     if t.lower() == "/rest":
         c = session.state.player
         c.hp = c.max_hp
@@ -319,6 +354,143 @@ def _inventory_text(session: GameSession) -> str:
     lines = [f"{i}. {it.name}×{it.qty} 价值{it.value}gp{(' [' + it.effect + ']') if it.effect else ''} —— {it.desc}"
              for i, it in enumerate(c.inventory, 1)]
     return ("背包(装备与附魔都会记在这里):\n" + "\n".join(lines) + f"\n金币:{c.gp} gp") if lines else f"背包空空。金币:{c.gp} gp"
+
+
+def _award_xp(session: GameSession, amount: int, source: str) -> bool:
+    """给角色发放经验(检定成功/任务奖励/击杀/特殊事件)并结算升级。"""
+    if amount <= 0:
+        return False
+    c = session.state.player
+    leveled = dnd.award_xp(c, amount)
+    session.stats["xp"] += amount
+    session.state.events.append(f"获得 {amount} XP({source})" + (" —— 升级!" if leveled else ""))
+    return leveled
+
+
+def _add_item(session: GameSession, item: Item) -> None:
+    c = session.state.player
+    found = next((x for x in c.inventory if x.name == item.name), None)
+    if found:
+        found.qty += max(1, item.qty)
+    else:
+        c.inventory.append(item)
+
+
+def _quest_by_number(session: GameSession, idx: int, status: str) -> Quest | None:
+    for i, q in enumerate([x for x in session.state.quests if x.status == status], 1):
+        if i == idx:
+            return q
+    return None
+
+
+def _quest_board_text(session: GameSession) -> str:
+    board, active = [], []
+    for q in session.state.quests:
+        (active if q.status == "accepted" else board).append(q)
+    lines = ["【冒险者公会的悬赏板与 NPC 委托】"]
+    for i, q in enumerate(board, 1):
+        lines.append(f"{i}. 【{q.source}】《{q.title}》—— {q.desc}({q.objective})奖励:{q.reward_xp} XP/{q.reward_gp} gp")
+    lines.append("【已接取】(用 /complete 编号 结算)")
+    for i, q in enumerate(active, 1):
+        lines.append(f"{i}. 《{q.title}》({q.source})——{q.objective}")
+    if not active:
+        lines.append("  (暂无)")
+    lines.append("接取:/accept 编号 · 结算:/complete 编号")
+    return "\n".join(lines)
+
+
+def accept_quest(session: GameSession, quest: Quest) -> None:
+    quest.status = "accepted"
+    session.state.events.append(f"接受任务《{quest.title}》({quest.source})")
+
+
+def complete_quest(session: GameSession, quest: Quest) -> bool:
+    """任务完成结算:经验/金币/装备奖励全部自动入库。"""
+    if quest.status != "accepted":
+        return False
+    quest.status = "done"
+    _award_xp(session, quest.reward_xp, f"完成任务《{quest.title}》")
+    if quest.reward_gp:
+        session.state.player.gp += quest.reward_gp
+        session.state.events.append(f"任务奖励金币 +{quest.reward_gp} → {session.state.player.gp} gp")
+    for it in quest.reward_items:
+        _add_item(session, it)
+        session.state.events.append(f"任务奖励物品【{it.name}】入库")
+    session.stats["quests_done"] += 1
+    session.state.events.append(f"完成任务《{quest.title}》({quest.source})")
+    return True
+
+
+def _attack_narrative(target: str, ac: int, d20: int, mod: int, total: int, hit: bool, crit: bool, weapon: str, dmg_expr: str, dmg_total: int, killed: bool, hp: int, max_hp: int) -> str:
+    head = "⚔ 大成功(暴击)!" if crit else "命中!" if hit else "未命中!"
+    dmg = f" 伤害({weapon}) {dmg_expr} → {dmg_total}" if hit and dmg_expr else ""
+    tail = f" 剩余 HP {hp}/{max_hp}。" if hit and not killed else (" 已被击杀!" if killed else "。")
+    return f"【攻击检定 · {target}】命中骰 d20={d20} 修正{mod:+d} = {total} vs AC {ac} → {head}{dmg}{tail}"
+
+
+def resolve_attack(session: GameSession, proposal: AttackProposal | None = None, seed: int | None = None) -> AttackResult | None:
+    """攻击检定:引擎掷 d20 判定命中(vs AC),命中后掷伤害骰;击杀结算经验/金币/装备。seed 用于测试可控。"""
+    combat = session.state.combat
+    if not combat or combat.get("killed"):
+        return None
+    c = session.state.player
+    weapon, sides, ability = dnd.class_weapon(c.klass)
+    if proposal and proposal.weapon:
+        weapon = proposal.weapon
+    target = (proposal.target if proposal and proposal.target else "") or combat.get("name", "敌人")
+    ac = proposal.ac if proposal and proposal.ac is not None else int(combat.get("ac", 12))
+    ability_cn = proposal.ability if proposal and proposal.ability else ability
+    amod = dnd.mod(dnd.ability_value(c, dnd.resolve_ability(ability_cn)))
+    atk_mod = amod + c.prof_bonus
+    roll = dice.roll_expression("1d20", seed=seed)
+    total = roll.total + atk_mod
+    crit = roll.total == 20
+    fumble = roll.total == 1
+    hit = not fumble and (crit or total >= ac)
+    dmg_total, dmg_expr = 0, ""
+    if hit:
+        dice_n = 2 if crit else 1
+        dmg_expr = f"{dice_n}d{sides}{amod:+d}"
+        damage_seed = None if seed is None else seed + 7
+        dmg_total = dice.roll_expression(dmg_expr, seed=damage_seed).total
+    hp = max(0, int(combat.get("hp", 0)) - dmg_total)
+    killed = hp <= 0
+    combat["hp"] = hp
+    if killed:
+        combat["killed"] = True
+        reward_xp = int(combat.get("reward_xp", 0) or 0)
+        _award_xp(session, reward_xp, f"击杀{target}")
+        if combat.get("gold"):
+            c.gp += int(combat["gold"])
+            session.state.events.append(f"从{target}身上搜得 {int(combat['gold'])} gp")
+        for it in combat.get("loot", []) or []:
+            _add_item(session, Item(name=str(it.get("name"))[:40], desc=str(it.get("desc", ""))[:80], effect=str(it.get("effect", ""))[:60], qty=max(1, int(it.get("qty", 1))), value=max(0, int(it.get("value", 2)))))
+            session.state.events.append(f"从{target}身上获得物品【{it.get('name')}】")
+        session.stats["kills"] += 1
+    return AttackResult(
+        target=target, ac=ac, weapon=weapon,
+        atk_d20=roll.total, atk_mod=atk_mod, atk_total=total,
+        hit=hit, crit=crit, damage_total=dmg_total, damage_expression=dmg_expr,
+        killed=killed, enemy_hp=hp, xp=int(combat.get("reward_xp", 0) or 0) if killed else 0,
+        narrative=_attack_narrative(target, ac, roll.total, atk_mod, total, hit, crit, weapon, dmg_expr, dmg_total, killed, hp, int(combat.get("max_hp", hp))),
+    )
+
+
+def open_combat(session: GameSession, spec: dict) -> None:
+    """按 DM 声明开启战斗目标(防御性清洗字段)。"""
+    combat = {
+        "name": str(spec.get("name", "敌人"))[:20] or "敌人",
+        "ac": max(5, min(25, int(spec.get("ac", 12) or 12))),
+        "hp": max(1, int(spec.get("hp", 8) or 8)),
+        "max_hp": max(1, int(spec.get("max_hp", spec.get("hp", 8)) or 8)),
+        "weapon": str(spec.get("weapon", ""))[:20],
+        "damage": str(spec.get("damage", ""))[:20],
+        "reward_xp": max(0, int(spec.get("reward_xp", 0) or 0)),
+        "gold": max(0, int(spec.get("gold", 0) or 0)),
+        "loot": list(spec.get("loot", []) or []),
+    }
+    session.state.combat = combat
+    session.state.events.append(f"战斗开始:【{combat['name']}】AC {combat['ac']} HP {combat['hp']}")
 
 
 def advance_scene(session: GameSession, scene_id: str) -> Message | None:

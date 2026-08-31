@@ -46,10 +46,12 @@ def _ability_menu() -> str:
 
 
 def _eligible_spells(c: Character) -> list[tuple[str, int]]:
+    """按职业法术亲和池过滤可选法术(与职业相关的法术种类)。"""
     slots = dnd.spell_slots(c.klass, c.level)
     max_lv = max(slots) if slots else 0
     already = {s.name for s in c.spells}
-    return [s for s in dnd.SPELL_POOL if 0 < s[1] <= max_lv and s[0] not in already]
+    pool = dnd.class_spell_pool(c.klass)
+    return [s for s in dnd.SPELL_POOL if s[0] in pool and 0 < s[1] <= max_lv and s[0] not in already]
 
 
 def _spell_menu(c: Character) -> str:
@@ -161,11 +163,12 @@ def choose(state: SessionState, rest: str) -> list[str]:
         chosen = _pick_many(rest, len(pool))
         if chosen is None:
             return [_spell_menu(c)]
-        for i in chosen:
+        cap = dnd.capability_cap(c.level)
+        for i in chosen[:cap]:
             name, lv = pool[i - 1]
             if name not in {s.name for s in c.spells}:
                 c.spells.append(Spell(name=name, level=lv, prepared=True))
-        msgs.append(f"已准备法术: {', '.join(s.name for s in c.spells if s.prepared) or '无'}。")
+        msgs.append(f"已准备法术: {', '.join(s.name for s in c.spells if s.prepared) or '无'}(选择上限 {cap})。")
         msgs.append(_finalize(state))
         return msgs
 
@@ -253,12 +256,15 @@ def build_from_form(form: dict | None, birthplaces: dict[str, str] | None = None
         gp = ci.get("gp", 20) + bginfo.get(c.background, {}).get("gp", 0)
     c.gp = max(0, _int(gp))
 
+    # 熟练技能：限定在职业相关池内，总选择上限 初始2个/每级+1
     skills = list(bginfo.get(c.background, {}).get("skills", []))
+    cap = dnd.capability_cap(c.level)
+    pool = dnd.class_skill_pool(c.klass)
     for s in form.get("skills") or []:
         s = str(s).strip()
-        if s in dnd.SKILL_ABILITY and s not in skills:
+        if s in pool and s in dnd.SKILL_ABILITY and s not in skills and len(skills) < len(bginfo.get(c.background, {}).get("skills", [])) + cap:
             skills.append(s)
-    c.skills = skills
+    c.skills = skills[:len(bginfo.get(c.background, {}).get("skills", [])) + cap]
 
     savs = [class_primary.get(c.klass, "体质")]
     for s in form.get("sav_throws") or []:
@@ -268,51 +274,90 @@ def build_from_form(form: dict | None, birthplaces: dict[str, str] | None = None
     c.sav_throws = savs
 
     if c.spell_slots:
+        pool = dnd.class_spell_pool(c.klass)
         max_lv = max(c.spell_slots)
+        cap = dnd.capability_cap(c.level)
         for name in form.get("spells") or []:
+            if len(c.spells) >= cap:
+                break
             name = str(name).strip()
             lv = next((lv for n, lv in dnd.SPELL_POOL if n == name), None)
-            if lv is not None and 0 < lv <= max_lv and name not in {s.name for s in c.spells}:
+            if lv is not None and 0 < lv <= max_lv and name in pool and name not in {s.name for s in c.spells}:
                 c.spells.append(Spell(name=name, level=lv, prepared=True))
-        for name, lv in [s for s in dnd.SPELL_POOL if s[1] == 0][:2]:
+        for name, lv in [s for s in dnd.SPELL_POOL if s[1] == 0 and s[0] in pool][:2]:
             if name not in {s.name for s in c.spells}:
                 c.spells.append(Spell(name=name, level=lv, prepared=True))
 
+    # 起始装备自动分配：职业标准包 + 身份(背景)装备；表单手动添的装备去重补入
+    for it in _starting_items(ci.get("pack", "")) + dnd.background_items(c.background):
+        if it["name"] not in {x.name for x in c.inventory}:
+            c.inventory.append(Item(**it))
     for row in form.get("inventory") or []:
         if not isinstance(row, dict) or not (row.get("name") or "").strip():
+            continue
+        name = str(row.get("name"))[:40]
+        if name in {x.name for x in c.inventory}:
             continue
         value = max(0, _int(row.get("value"), 2))
         c.inventory.append(
             Item(
-                name=str(row.get("name"))[:40],
+                name=name,
                 qty=max(1, _int(row.get("qty"), 1)),
                 desc=str(row.get("desc") or "")[:80],
                 effect=str(row.get("effect") or "")[:60],
                 value=value,
             )
         )
-    if not c.inventory:
-        for it in _starting_items(ci.get("pack", "")):
-            c.inventory.append(Item(**it))
     return c
 
 
-def character_options(birthplaces: dict[str, str] | None = None) -> dict:
-    """角色创建表单所需选项(种族/职业/背景/出生地/技能/豁免/法术)。"""
+def character_options(birthplaces: dict[str, str] | None = None, klass: str | None = None) -> dict:
+    """角色创建表单所需选项(种族/职业/背景/出生地/技能/豁免/法术)。
+
+    klass 提供时,技能与法术仅返回该职业相关的池(战士偏近身、盗贼偏潜行、法师偏法术等)。
+    """
     races = [
         {"name": r["name"], "note": r.get("note", ""), "bonus": {dnd.AB_CN.get(f, f): v for f, v in r.get("bonus", {}).items()}}
         for r in dnd.RACES
     ]
     birthplaces = birthplaces or {}
+    classes = []
+    for ci in dnd.CLASSES:
+        classes.append(
+            {
+                "name": ci["name"],
+                "gp": ci.get("gp", 20),
+                "pack": ci.get("pack", ""),
+                "equipment": [
+                    {"name": it["name"], "desc": it.get("desc", "起始装备"), "effect": "", "qty": 1, "value": it.get("value", 15)}
+                    for it in _starting_items(ci.get("pack", ""))
+                ],
+            }
+        )
+    backgrounds = [
+        {
+            "name": b["name"],
+            "perk": b.get("perk", ""),
+            "skills": list(b.get("skills", [])),
+            "items": [
+                {"name": it["name"], "desc": it.get("desc", "身份装备"), "effect": "", "qty": 1, "value": it.get("value", 2)}
+                for it in dnd.background_items(b["name"])
+            ],
+        }
+        for b in dnd.BACKGROUNDS
+    ]
+    skill_pool = dnd.class_skill_pool(klass) if klass else sorted(dnd.SKILL_ABILITY)
+    spell_pool = dnd.class_spell_pool(klass) if klass else [n for n, _lv in dnd.SPELL_POOL]
     return {
         "races": races,
-        "classes": [{"name": c["name"], "gp": c.get("gp", 20), "pack": c.get("pack", "")} for c in dnd.CLASSES],
-        "backgrounds": [{"name": b["name"], "perk": b.get("perk", "")} for b in dnd.BACKGROUNDS],
+        "classes": classes,
+        "backgrounds": backgrounds,
         "birthplaces": [{"key": k, "desc": v} for k, v in birthplaces.items()],
         "abilities": [{"key": dnd.AB_FIELD[f], "name": f} for f in dnd.ABILITY_ORDER],
-        "skills": [{"name": n, "ability": dnd.SKILL_ABILITY[n]} for n in sorted(dnd.SKILL_ABILITY)],
+        "skills": [{"name": n, "ability": dnd.SKILL_ABILITY[n]} for n in skill_pool if n in dnd.SKILL_ABILITY],
         "sav_throws": [{"key": f, "name": f} for f in dnd.ABILITY_ORDER],
-        "spells": [{"name": n, "level": lv} for n, lv in dnd.SPELL_POOL],
+        "spells": [{"name": n, "level": lv} for n, lv in dnd.SPELL_POOL if n in spell_pool],
+        "cap": 2,  # 初始最多选 2 个,每升一级 +1
     }
 
 
@@ -326,13 +371,19 @@ def _finalize(state: SessionState) -> str:
     c.skills = dnd.background_info(c.background).get("skills", [])
     c.sav_throws = [class_primary.get(c.klass, "体质")]
     c.gp += info.get("gp", 20) + dnd.background_info(c.background).get("gp", 0)
-    for it in _starting_items(info.get("pack", "")):
+    for it in _starting_items(info.get("pack", "")) + dnd.background_items(c.background):
         if it["name"] not in {x.name for x in c.inventory}:
             c.inventory.append(Item(**it))
     c.spell_slots = dnd.spell_slots(c.klass, c.level)
-    for n, lv in [s for s in dnd.SPELL_POOL if s[1] == 0][:2]:
-        if n not in {s.name for s in c.spells}:
-            c.spells.append(Spell(name=n, level=lv, prepared=True))
+    cap = dnd.capability_cap(c.level)
+    if c.spell_slots:
+        chosen = [s for s in c.spells if s.level > 0][:cap]
+        cantrips = [s for s in c.spells if s.level == 0]
+        pool_0 = dnd.class_spell_pool(c.klass)
+        for n, lv in [s for s in dnd.SPELL_POOL if s[1] == 0 and s[0] in pool_0][:2]:
+            if n not in {s.name for s in cantrips}:
+                cantrips.append(Spell(name=n, level=lv, prepared=True))
+        c.spells = chosen + cantrips
     state.phase = "done"
     return f"角色卡已建立!\n{sheet_text(state)}\n你现在可以自由行动了(直接描写动作开始冒险)。"
 

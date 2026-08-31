@@ -128,6 +128,19 @@ async def _public_session(sess) -> dict:
         "title": sess.title,
         "scene": {"id": scene_id, "name": scene_name, "image": await _public_image(scene_id)},
         "state": base,
+        "quests": [
+            {"id": q.id, "title": q.title, "source": q.source, "giver": q.giver, "objective": q.objective, "status": q.status}
+            for q in sess.state.quests
+        ],
+        "combat": {
+            "name": sess.state.combat.get("name", ""),
+            "hp": sess.state.combat.get("hp", 0),
+            "max_hp": sess.state.combat.get("max_hp", 0),
+            "ac": sess.state.combat.get("ac", 0),
+            "killed": bool(sess.state.combat.get("killed")),
+        }
+        if sess.state.combat
+        else None,
         "stats": dict(sess.stats),
         "providers": {"llm": get_llm_provider().name, "image": get_image_provider().name},
     }
@@ -245,8 +258,8 @@ async def generate_world(payload: dict):
 
 # ---------------------------------------------------------------- 角色卡模板(前端创建页存储)
 @app.get("/api/characters/options")
-async def character_form_options():
-    return character_options(SCENARIO["birthplaces"])
+async def character_form_options(klass: str | None = None):
+    return character_options(SCENARIO["birthplaces"], klass=klass)
 
 
 @app.get("/api/characters")
@@ -356,6 +369,48 @@ async def delete_session(session_id: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- 本地存档(保存/导出/导入/列表)
+@app.post("/api/sessions/{session_id}/save")
+async def save_session_named(session_id: str, payload: dict):
+    """给当前会话做一次显式「本地存档」:可自定义存档名(缺省沿用会话标题)。"""
+    sess = persistence.load_session(session_id)
+    if not sess:
+        raise HTTPException(404, "会话不存在")
+    title = safety.sanitize_input((payload or {}).get("title") or "").strip()[:40]
+    if title:
+        sess.title = title
+    elif not sess.title:
+        sess.title = "未命名冒险"
+    persistence.save_session(sess)
+    return {"saved": True, "session": await _public_session(sess)}
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: str):
+    """下载当前会话的完整存档 JSON(本地备份 / 换机迁移)。"""
+    path = persistence._path(session_id)
+    if not path.exists():
+        raise HTTPException(404, "会话不存在")
+    return FileResponse(str(path), media_type="application/json", filename=f"{session_id}-save.json")
+
+
+@app.post("/api/sessions/import")
+async def import_session(payload: dict):
+    """从本地存档 JSON 恢复会话(整包导入,含对话正文与角色状态)。"""
+    from .models import GameSession
+
+    try:
+        sess = GameSession.model_validate(payload or {})
+    except Exception:
+        raise HTTPException(422, "存档格式不合法") from None
+    sess.id = str(sess.id or "").strip()[:40] or persistence.new_id()
+    if not sess.title:
+        sess.title = "恢复的存档"
+    persistence.save_session(sess)
+    _sync_metrics(sess)
+    return {"session": await _public_session(sess)}
+
+
 # ---------------------------------------------------------------- 剧本元数据(默认世界)
 @app.get("/api/scenario")
 async def scenario_meta():
@@ -372,6 +427,10 @@ async def scenario_meta():
             for s in SCENARIO["scenes"].values()
         ],
         "encounters": SCENARIO["encounters"],
+        "quests": [
+            {"id": q["id"], "title": q["title"], "source": q["source"], "giver": q["giver"], "objective": q["objective"], "reward_xp": q["reward_xp"], "reward_gp": q["reward_gp"]}
+            for q in SCENARIO["quests"]
+        ],
     }
 
 
@@ -443,10 +502,31 @@ async def chat(session_id: str, payload: dict):
             yield f"event: done\ndata: {json.dumps({'session': await _public_session(sess), 'new_messages': []}, ensure_ascii=False)}\n\n"
             return
 
-        result = await propose_or_resolve(sess, text)
-        dm_text = result["dm_text"]
-        check = result.get("check")
+        provider = get_llm_provider()
         new_messages: list[dict] = []
+        # 流式 DM:DeepSeek 支持逐 token 输出 —— 叙述边说边发,不必等整段结束
+        if hasattr(provider, "plan_stream"):
+            streamed = ""
+            plan = None
+            async for kind, value in provider.plan_stream(sess, text):
+                if kind == "token":
+                    streamed += value
+                    yield f"event: token\ndata: {json.dumps({'token': value}, ensure_ascii=False)}\n\n"
+                elif kind == "plan":
+                    plan = value
+            result = await propose_or_resolve(sess, text, plan=plan)
+            dm_text = result["dm_text"]
+            # 兜底:极端异常下流式没有吐出任何文字时补发,保证玩家始终看得到叙述
+            if not streamed and dm_text:
+                async for token in get_llm_provider().stream_text(dm_text):
+                    yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+        else:
+            result = await propose_or_resolve(sess, text)
+            dm_text = result["dm_text"]
+            async for token in get_llm_provider().stream_text(dm_text):
+                yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+        check = result.get("check")
+        await asyncio.sleep(0.05)
 
         dm_msg = {
             "id": f"story-{persistence.new_id()}",
@@ -501,6 +581,29 @@ async def chat(session_id: str, payload: dict):
             }
             new_messages.append(adv)
             sess.messages.append(_from_dict(adv))
+
+        atk = result.get("attack_result")
+        if atk is not None:
+            combat_msg = {
+                "id": f"combat-{persistence.new_id()}",
+                "kind": "combat",
+                "role": "dice",
+                "content": atk.narrative,
+                "meta": {"target": atk.target, "ac": atk.ac, "atk_total": atk.atk_total, "hit": atk.hit, "damage": atk.damage_total, "killed": atk.killed, "xp": atk.xp},
+            }
+            new_messages.append(combat_msg)
+            sess.messages.append(_from_dict(combat_msg))
+            sess.stats["rolls"] += 1
+
+        if result.get("quest_msg"):
+            qm = {
+                "id": f"quest-{persistence.new_id()}",
+                "kind": "card",
+                "role": "system",
+                "content": result["quest_msg"],
+            }
+            new_messages.append(qm)
+            sess.messages.append(_from_dict(qm))
 
         persistence.save_session(sess)
         _sync_metrics(sess)

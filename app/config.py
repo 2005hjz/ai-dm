@@ -34,7 +34,8 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").s
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.8"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "600"))
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
+LLM_RETRIES = int(os.getenv("LLM_RETRIES", "2"))
 
 # ---- 图片生成提供方（默认走硅基流动 Z-Image；无 Key 时自动回退 mock） ----
 IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "remote").strip().lower()  # mock | remote

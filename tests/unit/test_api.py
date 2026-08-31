@@ -11,8 +11,10 @@ from app.main import SlidingWindowRateLimiter, app
 
 @pytest.fixture(scope="module")
 def client():
-    # 放行限流,避免多测试累计触发 429
-    app._limiter = SlidingWindowRateLimiter(limit=10**6)
+    # 放行限流:中间件读取的是 app.main 的模块级 _limiter,必须直接改模块全局
+    import app.main as main_mod
+
+    main_mod._limiter = SlidingWindowRateLimiter(limit=10**6)
     with TestClient(app) as c:
         yield c
 
@@ -268,13 +270,62 @@ def test_apply_character_404(client, char_dir):
     assert client.post(f"/api/sessions/{sid}/character", json={"character_id": "nope"}).status_code == 404
 
 
+def test_save_session_named(client):
+    """显式本地存档:可自定义存档名,列表可读到最新标题与更新时间。"""
+    sid = _new_session(client)
+    r = client.post(f"/api/sessions/{sid}/save", json={"title": "钟楼下的第一夜"})
+    assert r.status_code == 200
+    assert r.json()["saved"] is True
+    assert r.json()["session"]["title"] == "钟楼下的第一夜"
+    lst = client.get("/api/sessions").json()
+    top = next((x for x in lst if x["id"] == sid), None)
+    assert top and top["title"] == "钟楼下的第一夜"
+
+
+def test_export_session_downloads_json(client):
+    sid = _new_session(client)
+    assert client.post(f"/api/sessions/{sid}/save", json={"title": "备份"}).status_code == 200
+    resp = client.get(f"/api/sessions/{sid}/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert body["id"] == sid
+    assert body["title"] == "备份"
+    assert isinstance(body.get("messages"), list)
+
+
+def test_import_session_restores_save(client):
+    """把本地存档 JSON 整包导入:会话与全部对话恢复,角色状态不回退。"""
+    sid = _new_session(client)
+    client.post(f"/api/sessions/{sid}/save", json={"title": "待迁移的冒险"})
+    exported = client.get(f"/api/sessions/{sid}/export").json()
+
+    r = client.post("/api/sessions/import", json=exported)
+    assert r.status_code == 200, r.text
+    got = r.json()["session"]
+    assert got["id"] == sid
+    assert got["title"] == "待迁移的冒险"
+    assert got["state"]["scene_id"] == "prologue"
+    lst = client.get("/api/sessions").json()
+    assert any(x["id"] == sid for x in lst)
+
+
+def test_import_invalid_payload_returns_422(client):
+    assert client.post("/api/sessions/import", json={"foo": "bar"}).status_code == 422
+    assert client.post("/api/sessions/import", json=[]).status_code == 422
+
+
 def test_rate_limit_429():
     import app.main as main_mod
 
+    old_limiter = main_mod._limiter
     main_mod._limiter = SlidingWindowRateLimiter(limit=3)
-    with TestClient(app) as c:
-        c.get("/api/health")
-        c.get("/api/health")
-        c.get("/api/health")
-        r = c.get("/api/health")
-        assert r.status_code == 429
+    try:
+        with TestClient(app) as c:
+            c.get("/api/health")
+            c.get("/api/health")
+            c.get("/api/health")
+            r = c.get("/api/health")
+            assert r.status_code == 429
+    finally:
+        main_mod._limiter = old_limiter

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 
-from .models import WorldOutline
+from .models import Quest, WorldOutline
 
 
 def _b64(svg: str) -> str:
@@ -114,6 +114,40 @@ SCENARIO = {
     },
     "scene_order": ["prologue", "market", "forest", "tomb", "sanctum", "end"],
     "encounters": ["黑松林的饿狼群", "灰烬墓穴的食腐尸怪", "想独吞悬赏的赏金猎人", "墓穴神殿的缚灵·残响"],
+    "quests": [
+        {
+            "id": "q_rescue", "title": "寻回失踪的蕾拉", "source": "冒险者公会", "giver": "公会悬赏板",
+            "desc": "风铃镇铁匠老格的女儿蕾拉三天前走进黑松森林未归。",
+            "objective": "找到蕾拉的下落并把她带回来(线索:灰烬墓穴)。",
+            "reward_xp": 300, "reward_gp": 50,
+            "reward_items": [{"name": "寻人者铜徽", "desc": "任务奖励", "effect": "", "qty": 1, "value": 20}],
+        },
+        {
+            "id": "q_wolfpack", "title": "清剿黑松森林恶狼", "source": "冒险者公会", "giver": "公会悬赏板",
+            "desc": "黑松森林的外围恶狼成群,伤及采药人与商队。",
+            "objective": "猎杀头狼并驱散狼群。",
+            "reward_xp": 120, "reward_gp": 30,
+            "reward_items": [{"name": "狼皮斗篷", "desc": "任务奖励", "effect": "", "qty": 1, "value": 25}],
+        },
+        {
+            "id": "q_escort", "title": "护送商队出镇", "source": "冒险者公会", "giver": "公会悬赏板",
+            "desc": "镇外的旧道上最近不太平,商会愿意雇佣护卫。",
+            "objective": "护送商队安全抵达北境关哨。",
+            "reward_xp": 150, "reward_gp": 45,
+        },
+        {
+            "id": "q_cellar_key", "title": "找回酒窖钥匙", "source": "NPC·雪梨", "giver": "雪梨",
+            "desc": "酒馆老板娘雪梨的库房钥匙被一只野鼠偷进地沟,开不了新酒。",
+            "objective": "在地沟里取回库房钥匙。",
+            "reward_xp": 60, "reward_gp": 15,
+        },
+        {
+            "id": "q_seal", "title": "修复神殿封印", "source": "NPC·塞拉斯", "giver": "塞拉斯",
+            "desc": "神殿祭司塞拉斯说灰烬墓穴的封印在松动,需要你取得刻印石加固。",
+            "objective": "取得刻印石并协助加固墓穴封印。",
+            "reward_xp": 200, "reward_gp": 40,
+        },
+    ],
 }
 
 SCENARIO["scene_images"] = {sc["id"]: _svg_scene(sc["name"]) for sc in SCENARIO["scenes"].values()}
@@ -135,4 +169,5 @@ def default_world() -> WorldOutline:
         scene_images=dict(SCENARIO["scene_images"]),
         branches={k: [dict(b) for b in v] for k, v in SCENARIO["branches"].items()},
         encounters=list(SCENARIO["encounters"]),
+        quests=[Quest.model_validate(q) for q in SCENARIO["quests"]],
     )

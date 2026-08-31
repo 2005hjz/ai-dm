@@ -56,6 +56,14 @@ const els = {
   btnSaveChar: document.getElementById("btn-save-char"),
   btnSaveStart: document.getElementById("btn-save-start"),
   savedList: document.getElementById("saved-char-list"),
+  equipAuto: document.getElementById("equip-auto"),
+  questList: document.getElementById("quest-list"),
+  combatTarget: document.getElementById("combat-target"),
+  savedSessionList: document.getElementById("saved-session-list"),
+  saveName: document.getElementById("save-name"),
+  btnSaveSession: document.getElementById("btn-save-session"),
+  btnExportSession: document.getElementById("btn-export-session"),
+  fileImport: document.getElementById("file-import"),
 };
 const AB_FIELDS = ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
 const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
@@ -68,6 +76,7 @@ let sessionId = null;
 let streaming = false;
 let branchData = null;
 let currentScene = null;
+let lastPublicSession = null;
 
 // ---------------------------------------------------------------- 基础设施
 async function api(path, method = "GET", body = null) {
@@ -90,6 +99,7 @@ function uid() {
 
 // ---------------------------------------------------------------- 渲染
 function refreshSidebar(s) {
+  lastPublicSession = s;
   const st = s.state;
   currentScene = s.scene && s.scene.id ? s.scene.id : (st && st.scene_id) || null;
   els.sceneImg.src = s.scene.image || "";
@@ -151,6 +161,56 @@ function refreshSidebar(s) {
     const li = document.createElement("li");
     li.textContent = ev;
     els.eventLog.appendChild(li);
+  }
+  // 任务板(冒险者公会与 NPC 发布)
+  renderQuests(s);
+  // 战斗目标
+  renderCombat(s);
+}
+
+function renderQuests(s) {
+  const qs = s.quests || [];
+  const avail = qs.filter((q) => q.status === "available");
+  const active = qs.filter((q) => q.status === "accepted");
+  const done = qs.filter((q) => q.status === "done");
+  const parts = [];
+  if (avail.length) {
+    parts.push('<div class="q-title">可接取(公会/NPC)</div>');
+    for (const q of avail) {
+      parts.push(
+        `<div class="quest"><span class="q-source">${escapeHtml(q.source)}</span>《${escapeHtml(q.title)}》` +
+          `<div class="q-obj">${escapeHtml(q.objective)}</div></div>`
+      );
+    }
+    parts.push('<p class="dim">接取:/accept 编号 · 结算:/complete 编号</p>');
+  }
+  if (active.length) {
+    parts.push('<div class="q-title">已接取</div>');
+    for (const q of active) {
+      parts.push(
+        `<div class="quest active"><span class="q-source">${escapeHtml(q.source)}</span>《${escapeHtml(q.title)}》` +
+          `<div class="q-obj">${escapeHtml(q.objective)}</div></div>`
+      );
+    }
+  }
+  if (done.length) {
+    parts.push('<div class="q-title" style="opacity:.7">已完成</div>');
+    for (const q of done) {
+      parts.push(`<div class="quest done">《${escapeHtml(q.title)}》</div>`);
+    }
+  }
+  els.questList.innerHTML = parts.length ? parts.join("") : '<p class="dim">暂无任务</p>';
+}
+
+function renderCombat(s) {
+  const cb = s.combat;
+  if (cb && cb.name) {
+    els.combatTarget.innerHTML =
+      `<div class="combat"><b>${escapeHtml(cb.name)}</b>` +
+      `<div>HP ${cb.hp}/${cb.max_hp} · AC ${cb.ac} · <span class="${cb.killed ? "ok" : "bad"}">${cb.killed ? "已击杀" : "战斗中"}</span></div></div>` +
+      '<p class="dim">用 /attack 掷攻击检定(d20 命中 + 伤害骰)</p>';
+  } else {
+    els.combatTarget.innerHTML = '<p class="dim">无</p>';
   }
 }
 
@@ -245,6 +305,17 @@ function renderMessage(m) {
     }
     return el;
   }
+  if (m.kind === "combat") {
+    const el = bubble("roll", m.content);
+    const meta = m.meta || {};
+    if (meta.hit !== undefined) {
+      const sp = document.createElement("span");
+      sp.className = "degree " + (meta.killed ? "severity-good" : meta.hit ? "severity-mid" : "severity-bad");
+      sp.textContent = meta.killed ? "击杀" : meta.hit ? "命中" : "未命中";
+      el.querySelector(".bubble").appendChild(sp);
+    }
+    return el;
+  }
   // story / system
   const el = bubble(m.kind === "system" ? "system" : "story", m.content);
   if (m.role === "dm") {
@@ -278,12 +349,24 @@ function scrollToBottom() {
 }
 
 // ---------------------------------------------------------------- 剧情分支树
-function renderBranchTree(data, currentId) {
+function visitedSceneIds(s) {
+  // 从会话大事记里解析「推进到「场景名」大分支」,标记已走过的分支节点
+  const seen = new Set();
+  if (!s || !s.state) return seen;
+  for (const ev of s.state.events || []) {
+    const m = /推进到「(.{1,20})」大分支/.exec(ev);
+    if (m) seen.add(m[1]);
+  }
+  return seen;
+}
+
+function renderBranchTree(data, currentId, visited) {
   if (!data || !data.nodes) return;
   const box = els.branchTree;
   box.innerHTML = "";
   const byId = {};
   for (const n of data.nodes) byId[n.id] = n;
+  const marks = visited || visitedSceneIds(lastPublicSession);
 
   const container = document.createElement("div");
   container.style.display = "flex";
@@ -291,7 +374,7 @@ function renderBranchTree(data, currentId) {
   container.style.gap = "4px";
 
   const start = data.nodes.find((n) => n.id === data.order[0]) || data.nodes[0];
-  container.appendChild(branchNodeEl(start, currentId));
+  container.appendChild(branchNodeEl(start, currentId, marks));
 
   // 大剧情分支边走:每个节点 → 声明过的下一分支
   const children = {};
@@ -303,18 +386,20 @@ function renderBranchTree(data, currentId) {
     for (const e of children[n.id] || []) {
       const edge = document.createElement("div");
       edge.className = "branch-edge";
+      if (marks.has(n.name) || byId[e.from] && marks.has(byId[e.from].name)) edge.classList.add("traveled");
       edge.textContent = "── " + (e.label || "推进") + " → " + (byId[e.to] ? byId[e.to].name : e.to);
       container.appendChild(edge);
-      if (byId[e.to]) container.appendChild(branchNodeEl(byId[e.to], currentId));
+      if (byId[e.to]) container.appendChild(branchNodeEl(byId[e.to], currentId, marks));
     }
   }
   box.appendChild(container);
 }
 
-function branchNodeEl(n, currentId) {
+function branchNodeEl(n, currentId, visited) {
   const el = document.createElement("div");
   el.className = "branch-node";
   if (n.id === currentId) el.classList.add("current");
+  else if (visited && visited.has(n.name)) el.classList.add("visited");
   if (n.terminal) el.classList.add("terminal");
   const name = document.createElement("span");
   const sk = document.createElement("span");
@@ -333,6 +418,13 @@ async function loadBranchTree() {
   } catch (e) {
     els.branchTree.innerHTML = '<p class="dim">分支树不可用</p>';
   }
+}
+
+// 让「场景卡 + 剧情分支树」始终与当前剧情同步
+function refreshViews(s) {
+  refreshSidebar(s || lastPublicSession);
+  if (branchData) renderBranchTree(branchData, currentScene);
+  else loadBranchTree();
 }
 
 function makeStreamingBubble() {
@@ -402,33 +494,79 @@ function handleBlock(block, sb) {
     scrollToBottom();
   } else if (event === "done") {
     renderNew(payload.new_messages || []);
-    refreshSidebar(payload.session);
-    if (branchData) renderBranchTree(branchData, currentScene);
+    refreshViews(payload.session);
   }
 }
 
 // ---------------------------------------------------------------- 角色创建(初始身份与属性)
-async function loadCharOptions() {
-  if (charOptions) return charOptions;
-  charOptions = await api("/api/characters/options");
+let currentKlass = "";
+
+async function loadCharOptions(klass) {
+  const k = klass || "";
+  if (charOptions && currentKlass === k) return charOptions;
+  charOptions = await api("/api/characters/options" + (k ? "?klass=" + encodeURIComponent(k) : ""));
+  currentKlass = k;
+  if (!charOptions.classes || charOptions.classes.length === 0) {
+    throw new Error("角色创建表单数据缺失");
+  }
+  const prevRace = els.fRace.value;
+  const prevBg = els.fBackground.value;
+  const prevBp = els.fBirthplace.value;
   fillSelect(els.fRace, charOptions.races, "name");
   fillSelect(els.fClass, charOptions.classes, "name");
   fillSelect(els.fBackground, charOptions.backgrounds, "name");
   fillSelect(els.fBirthplace, charOptions.birthplaces, "key");
+  if (prevRace) els.fRace.value = prevRace;
+  if (prevBg) els.fBackground.value = prevBg;
+  if (prevBp) els.fBirthplace.value = prevBp;
   els.fAbilities.innerHTML = (charOptions.abilities || [])
     .map(
       (a) =>
         `<label class="abil-item"><span>${a.name}</span><input type="number" min="1" max="30" value="10" data-key="${a.key}" /></label>`
     )
     .join("");
-  els.fSkills.innerHTML = chipList(charOptions.skills, "skill");
-  els.fSavs.innerHTML = chipList(charOptions.sav_throws, "sav");
+  buildSkillsSpells();
+  updateEquip();
+  return charOptions;
+}
+
+function buildSkillsSpells() {
+  els.fSkills.innerHTML = chipList(charOptions.skills || [], "skill");
+  els.fSavs.innerHTML = chipList(charOptions.sav_throws || [], "sav");
   els.fSpells.innerHTML = chipList(
     (charOptions.spells || []).map((s) => ({ ...s, label: s.name + " (" + s.level + "环)" })),
     "spell"
   );
-  els.fRace.addEventListener("change", updateRaceNote);
-  return charOptions;
+}
+
+function updateEquip() {
+  const cc = charOptions || { classes: [], backgrounds: [] };
+  const ci = cc.classes.find((c) => c.name === els.fClass.value);
+  const bi = (cc.backgrounds || []).find((b) => b.name === els.fBackground.value);
+  const items = (ci && ci.equipment ? ci.equipment : []).concat(bi && bi.items ? bi.items : []);
+  if (!items.length) {
+    els.equipAuto.innerHTML = '<p class="dim">选择职业与背景后自动分配(职业标准包 + 身份装备)</p>';
+    return;
+  }
+  els.equipAuto.innerHTML = items
+    .map((it) => `<span class="chip item-auto">${escapeHtml(it.name)}<i>${escapeHtml(it.desc || "")}</i></span>`)
+    .join("");
+}
+
+function abilityCap() {
+  const lv = parseInt(els.fLevel.value, 10) || 1;
+  return ((charOptions && charOptions.cap) || 2) + (lv - 1);
+}
+
+function onChipChange(e) {
+  if (!e.target.matches("input[type=checkbox]")) return;
+  const box = e.target.closest("#f-skills, #f-spells");
+  if (!box) return;
+  const checked = box.querySelectorAll("input[type=checkbox]:checked");
+  if (checked.length > abilityCap()) {
+    e.target.checked = false;
+    alert("最多选择 " + abilityCap() + " 个(初始 2 个,之后每升一级增加 1 个,当前等级提供该上限)");
+  }
 }
 
 function fillSelect(sel, items, key) {
@@ -545,13 +683,21 @@ function fillCharForm(c) {
 }
 
 async function openCharModal(profileId) {
-  await loadCharOptions();
   currentCharId = profileId || null;
+  let data = null;
   if (currentCharId) {
-    const data = await api("/api/characters/" + currentCharId);
+    data = await api("/api/characters/" + currentCharId);
     fillCharForm(data.character);
   } else {
     resetCharForm();
+  }
+  await loadCharOptions((data && data.character.klass) || "");
+  if (data) {
+    buildSkillsSpells();
+    setChecked(els.fSkills, data.character.skills || []);
+    setChecked(els.fSavs, data.character.sav_throws || []);
+    setChecked(els.fSpells, (data.character.spells || []).map((s) => s.name));
+    updateEquip();
   }
   els.modal.classList.remove("hidden");
 }
@@ -610,7 +756,7 @@ async function saveCharacter(startNew) {
     character_id: saved.id,
   });
   sessionId = s.id;
-  refreshSidebar(s);
+  refreshViews(s);
   renderAll([]);
   const full = await api("/api/sessions/" + sessionId);
   renderAll(full.messages || []);
@@ -622,9 +768,8 @@ async function applySavedToSession(cid) {
   if (!sessionId) return alert("请先创建或载入一个会话");
   await api("/api/sessions/" + sessionId + "/character", "POST", { character_id: cid });
   const full = await api("/api/sessions/" + sessionId);
-  refreshSidebar(full.session);
+  refreshViews(full.session);
   renderAll(full.messages || []);
-  await loadBranchTree();
 }
 
 async function deleteSavedCharacter(cid) {
@@ -673,6 +818,131 @@ async function renderSavedCharacters() {
   });
 }
 
+// ---------------------------------------------------------------- 本地存档(可折叠 / 保存 / 载入 / 导出 / 导入 / 删除)
+async function renderSavedSessions() {
+  let list;
+  try {
+    list = await api("/api/sessions");
+  } catch (e) {
+    els.savedSessionList.innerHTML = '<p class="dim">暂时无法读取本地存档</p>';
+    return;
+  }
+  els.savedSessionList.innerHTML = "";
+  if (!list || !list.length) {
+    els.savedSessionList.innerHTML = '<p class="dim">还没有本地存档。开始一场冒险后点「保存进度」。</p>';
+    return;
+  }
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    const row = document.createElement("div");
+    row.className = "saved-session";
+    if (s.id === sessionId) row.classList.add("current");
+    if (i >= 3) row.classList.add("hidden"); // 旧存档默认完全隐藏,点「展开全部」才显示
+
+    const details = document.createElement("details");
+    details.className = "saved-details";
+    if (i < 3) details.open = true;
+
+    const summary = document.createElement("summary");
+    summary.className = "saved-session-head";
+    const name = document.createElement("span");
+    name.className = "saved-name";
+    name.textContent = s.title || "未命名冒险";
+    const meta = document.createElement("span");
+    meta.className = "saved-meta";
+    meta.textContent = (s.msg_count || 0) + " 条对话";
+    summary.append(name, meta);
+
+    const body = document.createElement("div");
+    body.className = "saved-session-body";
+    const sub = document.createElement("div");
+    sub.className = "saved-sub";
+    sub.textContent =
+      "场景「" + (s.scene_id || "—") + "」 · " + (s.player || "无名冒险者") +
+      " · " + new Date((s.updated_at || 0) * 1000).toLocaleString();
+    const acts = document.createElement("div");
+    acts.className = "saved-acts";
+    acts.innerHTML =
+      '<button type="button" class="mini-btn act-load">载入</button>' +
+      '<button type="button" class="mini-btn act-exp">导出</button>' +
+      '<button type="button" class="mini-btn act-del">删除</button>';
+    body.append(sub, acts);
+
+    details.append(summary, body);
+    row.append(details);
+    row.dataset.id = s.id;
+    els.savedSessionList.appendChild(row);
+  }
+  if (list.length > 3) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "mini-btn saved-toggle";
+    toggle.textContent = "展开全部存档 · 共 " + list.length + " 条";
+    toggle.addEventListener("click", () => {
+      const expanded = els.savedSessionList.classList.toggle("show-all");
+      toggle.textContent = expanded ? "收起旧存档" : "展开全部存档 · 共 " + list.length + " 条";
+    });
+    els.savedSessionList.appendChild(toggle);
+  }
+  els.savedSessionList.querySelectorAll(".act-load").forEach((b) => {
+    b.addEventListener("click", () => loadSavedSession(b.closest(".saved-session").dataset.id));
+  });
+  els.savedSessionList.querySelectorAll(".act-exp").forEach((b) => {
+    b.addEventListener("click", () => exportSavedSession(b.closest(".saved-session").dataset.id));
+  });
+  els.savedSessionList.querySelectorAll(".act-del").forEach((b) => {
+    b.addEventListener("click", () => deleteSavedSession(b.closest(".saved-session").dataset.id));
+  });
+}
+
+async function saveCurrentSession() {
+  if (!sessionId) return alert("请先开始一场冒险再保存进度");
+  const title = els.saveName.value.trim();
+  const r = await api("/api/sessions/" + sessionId + "/save", "POST", title ? { title } : {});
+  alert(title ? "已保存本地存档:「" + title + "」" : "已保存本地存档");
+  if (r.session) refreshViews(r.session);
+  await renderSavedSessions();
+}
+
+async function loadSavedSession(id) {
+  const full = await api("/api/sessions/" + id);
+  sessionId = id;
+  refreshViews(full.session);
+  renderAll(full.messages || []);
+  await renderSavedSessions();
+}
+
+async function exportSavedSession(id) {
+  window.location.href = "/api/sessions/" + id + "/export";
+}
+
+async function deleteSavedSession(id) {
+  if (!confirm("确定删除这份本地存档?对应文件会一并移除。")) return;
+  await api("/api/sessions/" + id, "DELETE");
+  if (sessionId === id) sessionId = null;
+  await renderSavedSessions();
+}
+
+async function importSavedSession() {
+  const file = els.fileImport.files[0];
+  if (!file) return alert("请先选择要导入的存档 JSON 文件");
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch (e) {
+    return alert("导入失败:文件不是合法的 JSON 存档");
+  }
+  const payload = data && (data.id || (data.session && data.session.id)) ? data : data.session || data;
+  const r = await api("/api/sessions/import", "POST", payload);
+  sessionId = r.session.id;
+  const full = await api("/api/sessions/" + sessionId);
+  refreshViews(full.session);
+  renderAll(full.messages || []);
+  els.fileImport.value = "";
+  await renderSavedSessions();
+  alert("存档已导入:「" + (r.session.title || "恢复的存档") + "」");
+}
+
 // ---------------------------------------------------------------- 交互
 async function sendInput() {
   const text = els.input.value.trim();
@@ -692,7 +962,7 @@ async function sendInput() {
     if (text.startsWith("/")) {
       const r = await api("/api/sessions/" + sessionId + "/command", "POST", { text });
       renderNew(r.new_messages || []);
-      refreshSidebar(r.session);
+      refreshViews(r.session);
     } else {
       await sendFreeAction(text);
     }
@@ -712,7 +982,7 @@ async function newGame() {
   const name = els.playerName.value.trim() || "无名调查员";
   const s = await api("/api/sessions", "POST", { player_name: name });
   sessionId = s.id;
-  refreshSidebar(s);
+  refreshViews(s);
   renderAll([]);
   // 拉完整开场
   const full = await api("/api/sessions/" + sessionId);
@@ -720,6 +990,26 @@ async function newGame() {
   await loadBranchTree();
 }
 
+async function onClassChange() {
+  const k = els.fClass.value;
+  try {
+    await loadCharOptions(k);
+    if (k) els.fClass.value = k;
+    buildSkillsSpells();
+    updateEquip();
+    updateRaceNote();
+  } catch (e) {
+    buildSkillsSpells();
+    updateEquip();
+  }
+}
+
+els.fClass.addEventListener("change", onClassChange);
+els.fRace.addEventListener("change", updateRaceNote);
+els.fBackground.addEventListener("change", updateEquip);
+els.fLevel.addEventListener("change", onClassChange);
+els.fSkills.addEventListener("change", onChipChange);
+els.fSpells.addEventListener("change", onChipChange);
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
   sendInput();
@@ -744,6 +1034,14 @@ els.btnAddItem.addEventListener("click", () => addInventoryRow());
 els.btnSaveChar.addEventListener("click", () => saveCharacter(false));
 els.btnSaveStart.addEventListener("click", () => saveCharacter(true));
 
+// 本地存档
+els.btnSaveSession.addEventListener("click", saveCurrentSession);
+els.btnExportSession.addEventListener("click", () => {
+  if (!sessionId) return alert("当前没有可导出的会话");
+  exportSavedSession(sessionId);
+});
+els.fileImport.addEventListener("change", importSavedSession);
+
 async function init() {
   try {
     const h = await api("/api/health");
@@ -754,18 +1052,20 @@ async function init() {
     els.img.textContent = "";
   }
   renderSavedCharacters();
+  await renderSavedSessions();
   loadCharOptions().catch(() => {});
   const sessions = await api("/api/sessions");
   if (sessions && sessions.length) {
     const s = sessions[0];
     sessionId = s.id;
     const full = await api("/api/sessions/" + sessionId);
-    refreshSidebar(full.session);
+    refreshViews(full.session);
     renderAll(full.messages || []);
   } else {
     await newGame();
   }
   await loadBranchTree();
+  await renderSavedSessions();
 }
 
 init();

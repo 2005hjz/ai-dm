@@ -156,3 +156,119 @@ def test_propose_or_resolve_check_numeric_adjudication(monkeypatch):
     assert check.success is True or check.success is False
     assert res["advanced"] is False
     assert sess.stats["checks"] == 1
+
+
+def test_mock_fallback_is_scene_aware():
+    """降级文案不再是一句与场景无关的固定话:至少带出当前场景名,仍不预写剧情/推进/检定。"""
+    sess = start_session(new_id())
+    plan = MockLLMProvider().plan(sess, "我沿着钟楼下的小巷往东走")
+    assert plan.narrative
+    assert "风铃镇广场" in plan.narrative
+    assert plan.check is None and plan.advance_scene is None
+    # 玩家动作不应当被原样搬进降级叙述
+    assert "钟楼下的小巷" not in plan.narrative
+
+
+def test_deepseek_retries_on_transient_failure_then_uses_real_plan(monkeypatch):
+    """瞬时超时先重试,重试成功后走真实 LLM 剧本,不再静默降级成固定氛围文案。"""
+    import asyncio
+
+    import httpx
+
+    import app.providers as p
+
+    calls = {"n": 0}
+
+    def flaky_call(messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("first attempt timed out")
+        return '{"narrative": "小巷尽头是铁匠铺,你闻到了炉火与铁锈的味道。", "check": null}'
+
+    sess = start_session(new_id())
+    provider = p.DeepSeekLLMProvider()
+    monkeypatch.setattr(provider, "_call_chat", flaky_call)
+
+    async def run():
+        return await provider.plan(sess, "我沿着钟楼下的小巷往东走")
+
+    plan = asyncio.run(run())
+    assert calls["n"] == 2
+    assert "铁匠铺" in plan.narrative
+    assert plan.check is None
+
+
+def test_deepseek_falls_back_only_after_exhausting_retries(monkeypatch):
+    """重试全部失败时才降级 mock,且降级文案带当前场景名。"""
+    import asyncio
+
+    import httpx
+
+    import app.providers as p
+
+    sess = start_session(new_id())
+
+    def always_fail(messages):
+        raise httpx.ConnectTimeout("still down")
+
+    provider = p.DeepSeekLLMProvider()
+    monkeypatch.setattr(provider, "_call_chat", always_fail)
+
+    async def run():
+        return await provider.plan(sess, "我检查广场边的水井")
+
+    plan = asyncio.run(run())
+    assert isinstance(plan, DMPlan)
+    assert "风铃镇广场" in plan.narrative
+    assert plan.check is None
+    assert plan.advance_scene is None
+
+
+def test_narrative_stream_slice_decodes_on_the_fly():
+    """流式抽取器:应把 JSON 前缀里的 narrative 逐步解码(含续界转义/换行),未闭合时给当前可见片段。"""
+    from app.providers import _narrative_stream_slice
+
+    # 完整片段:标准转义解码
+    buf = '{"narrative":"雾里\\n传来一声钟响","check":null}'
+    assert _narrative_stream_slice(buf) == "雾里\n传来一声钟响"
+
+    # 未闭合:返回当前可见部分
+    assert _narrative_stream_slice('{"narrative":"雾里\\n传来一') == "雾里\n传来一"
+
+    # 转义符恰被截断在末尾(末尾单个反斜杠) → 尚未闭合,应等下一块补齐,不产生乱码
+    assert _narrative_stream_slice('{"narrative":"雾里' + "\\") == "雾里"
+
+    # narrative 尚未开始:返回空
+    assert _narrative_stream_slice('{"check":null') == ""
+
+
+def test_plan_stream_yields_tokens_then_plan(monkeypatch):
+    """流式判决:按增量顺序产出 narrative token,最后产出完整 DMPlan;极端失败也稳定产出兜底 plan。"""
+    import app.providers as p
+
+    sess = start_session(new_id())
+    provider = p.DeepSeekLLMProvider()
+
+    async def fake_stream_chat(messages):
+        deltas = ['{"narrative":"你踏上猎道。', "林间有雾。", '","check":{"skill":"感知","dc":10}}']
+        for d in deltas:
+            yield d
+
+    monkeypatch.setattr(provider, "_stream_chat_async", fake_stream_chat)
+
+    async def run():
+        out_tokens = []
+        plan = None
+        async for kind, value in provider.plan_stream(sess, "我出发去森林"):
+            if kind == "token":
+                out_tokens.append(value)
+            elif kind == "plan":
+                plan = value
+        return out_tokens, plan
+
+    out_tokens, plan = asyncio.run(run())
+    assert "".join(out_tokens).startswith("你踏上猎道。")
+    assert isinstance(plan, DMPlan)
+    assert plan.advance_scene is None
+    assert plan.check and plan.check.dc == 10
+    assert plan.narrative == "你踏上猎道。林间有雾。"

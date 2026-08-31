@@ -1,0 +1,65 @@
+{
+  "name": "测试二",
+  "race": "精灵",
+  "klass": "盗贼",
+  "background": "贵族",
+  "level": 1,
+  "xp": 0,
+  "hp": 5,
+  "max_hp": 5,
+  "gp": 150,
+  "birthplace": "圣白城教会",
+  "abilities": {
+    "strength": 12,
+    "dexterity": 15,
+    "constitution": 10,
+    "intelligence": 8,
+    "wisdom": 14,
+    "charisma": 15
+  },
+  "prof_bonus": 2,
+  "skills": [
+    "说服",
+    "隐匿",
+    "侦查"
+  ],
+  "sav_throws": [
+    "敏捷"
+  ],
+  "spells": [],
+  "spell_slots": {},
+  "inventory": [
+    {
+      "name": "两把细剑",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 15,
+      "equipped": false
+    },
+    {
+      "name": "皮甲",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 15,
+      "equipped": false
+    },
+    {
+      "name": "盗贼工具",
+      "desc": "起始装备",
+      "effect": "",
+      "qty": 1,
+      "value": 10,
+      "equipped": false
+    },
+    {
+      "name": "家徽戒指",
+      "desc": "身份装备",
+      "effect": "",
+      "qty": 1,
+      "value": 15,
+      "equipped": false
+    }
+  ]
+}

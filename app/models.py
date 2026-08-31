@@ -61,6 +61,51 @@ class Character(BaseModel):
     inventory: list[Item] = Field(default_factory=list)
 
 
+class Quest(BaseModel):
+    """一件发布在世界中的任务：来源为冒险者公会或 NPC，完成结算经验/金币/物品。"""
+
+    id: str
+    title: str
+    source: str = "冒险者公会"  # 冒险者公会 / NPC名
+    giver: str = ""
+    desc: str = ""
+    objective: str = ""  # 完成条件叙述
+    reward_xp: int = 0
+    reward_gp: int = 0
+    reward_items: list[Item] = Field(default_factory=list)
+    status: str = "available"  # available / accepted / done
+
+
+class AttackProposal(BaseModel):
+    """DM 声明的攻击检定（引擎用 d20 掷命中 + 掷伤害骰裁决）。"""
+
+    target: str = ""
+    ac: int | None = None
+    weapon: str = ""
+    damage: str = ""  # 伤害骰表达式，如 1d8+3
+    ability: str | None = None  # 命中加值的能力名
+    reason: str = ""
+
+
+class AttackResult(BaseModel):
+    """一次攻击检定结果：命中骰 d20 + 修正 vs AC，命中后掷伤害骰。"""
+
+    target: str
+    ac: int
+    weapon: str
+    atk_d20: int
+    atk_mod: int  # 能力修正 + 职业熟练加值
+    atk_total: int
+    hit: bool
+    crit: bool = False
+    damage_total: int = 0
+    damage_expression: str = ""
+    killed: bool = False
+    enemy_hp: int = 0
+    xp: int = 0  # 击杀奖励经验
+    narrative: str = ""
+
+
 class WorldOutline(BaseModel):
     """剧本（世界大纲）：与角色互不绑定，玩家可提供规则文本，DM 据此主持。"""
 
@@ -77,6 +122,7 @@ class WorldOutline(BaseModel):
     scene_images: dict[str, str] = Field(default_factory=dict)
     branches: dict[str, list[dict]] = Field(default_factory=dict)  # {zone: [{target,label}]}
     encounters: list[str] = Field(default_factory=list)
+    quests: list[Quest] = Field(default_factory=list)  # 世界任务列表(公会/NPC 发布)
 
 
 class DiceRoll(BaseModel):
@@ -132,19 +178,23 @@ class SkillProposal(BaseModel):
 
 
 class DMPlan(BaseModel):
-    """一次自由行动中 DM 的结构化决策输出：叙述/检定/推进/记账。"""
+    """一次自由行动中 DM 的结构化决策输出：叙述/检定/推进/战斗/任务/记账。"""
 
     narrative: str = Field(..., min_length=1)
     check: SkillProposal | None = None
+    attack: AttackProposal | None = None  # 攻击检定(d20 命中 + 伤害骰)
+    combat: dict[str, Any] | None = None  # 开战目标 {id/name/ac/hp/weapon/damage/reward_xp/gold/loot}
     advance_scene: str | None = None
+    quest_done: str | None = None  # 完成的任务 id(引擎结算奖励)
     triggers: list[str] = Field(default_factory=list)
     loot: list[Item] = Field(default_factory=list)  # 获得物品（自动入库）
     gold: int = 0  # 金币增减
     hp: int = 0  # HP 增减（负为伤害）
+    xp: int = 0  # 击杀/任务/特殊事件奖励经验
 
 
 class SessionState(BaseModel):
-    """会话动态世界状态：场景/角色/世界/旗标/大事记。"""
+    """会话动态世界状态：场景/角色/世界/任务/战斗/旗标/大事记。"""
 
     scene_id: str = "prologue"
     turn: int = 0
@@ -152,6 +202,8 @@ class SessionState(BaseModel):
     player: Character = Field(default_factory=Character)
     world: WorldOutline = Field(default_factory=WorldOutline)
     npcs: dict[str, Any] = Field(default_factory=dict)
+    quests: list[Quest] = Field(default_factory=list)  # 公会/NPC 发布的任务
+    combat: dict[str, Any] | None = None  # 当前战斗目标
     flags: dict[str, Any] = Field(default_factory=dict)
     events: list[str] = Field(default_factory=list)
     pending: dict[str, Any] = Field(default_factory=dict)
@@ -175,5 +227,7 @@ class GameSession(BaseModel):
             "big_success": 0,
             "big_failure": 0,
             "xp": 0,
+            "kills": 0,
+            "quests_done": 0,
         }
     )

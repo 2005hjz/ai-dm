@@ -20,7 +20,7 @@ import httpx
 
 from . import config, memory
 from .dice import normalize_skill, roll_expression
-from .models import DMPlan, GameSession, Item, SkillProposal, WorldOutline
+from .models import AttackProposal, DMPlan, GameSession, Item, SkillProposal, WorldOutline
 from .scenario import SCENARIO
 
 
@@ -59,11 +59,55 @@ class MockLLMProvider(BaseLLMProvider):
     ]
 
     def plan(self, session: GameSession, player_text: str) -> DMPlan:
-        return DMPlan(narrative=random.choice(self._ATM), triggers=["ai_fallback"])
+        return DMPlan(narrative=_fallback_narrative(session), triggers=["ai_fallback"])
 
 
-def parse_dm_plan(raw: str, fallback_narrative: str = "") -> DMPlan:
-    """把 LLM 返回文本解析为 DMPlan；容错 markdown 代码块/尾注/非法字段。"""
+def _fallback_narrative(session: GameSession) -> str:
+    """降级文案:只做当前场景的氛围叙述(不预写剧情/推进/检定),避免干巴巴的同一句话。"""
+    scene = session.state.world.scenes.get(session.state.scene_id) or {}
+    name = str(scene.get("name") or "").strip()
+    desc = str(scene.get("desc") or "").strip()
+    flavor = random.choice(MockLLMProvider._ATM)
+    if not name:
+        return flavor
+    if desc:
+        return f"{name}:{desc[:40]}。{flavor}"
+    return f"{name}。{flavor}"
+
+
+def _narrative_stream_slice(buffer: str) -> str:
+    """从流式收到的 JSON 前缀中截出 narrative 字段当前已完整/进行中的文本片段。
+
+    通过 response_format=json_object 且 prompt 要求 narrative 放最前,LLM 输出形如
+    {"narrative":"……","check":…}。该函数只取引号内的原文字符串(含已产生的转义解码),
+    未闭合时返回当前可见部分 —— 前端按 token 顺序追加即可做到即时出字。
+    """
+    m = re.search(r'"narrative"\s*:\s*"', buffer)
+    if not m:
+        return ""
+    out = []
+    i = m.end()
+    esc = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
+    while i < len(buffer):
+        c = buffer[i]
+        if c == "\\":
+            if i + 1 >= len(buffer):
+                break
+            out.append(esc.get(buffer[i + 1], buffer[i + 1]))
+            i += 2
+            continue
+        if c == '"':
+            break
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def parse_dm_plan(raw: str, fallback_narrative: str = "", narrative_override: str = "") -> DMPlan:
+    """把 LLM 返回文本解析为 DMPlan；容错 markdown 代码块/尾注/非法字段。
+
+    narrative_override: 流式模式下前端已按 token 收到的叙述,用于 JSON 不完整时的兜底对齐。
+    """
     cleaned = raw.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
@@ -72,8 +116,8 @@ def parse_dm_plan(raw: str, fallback_narrative: str = "") -> DMPlan:
     except Exception:
         obj = None
     if not isinstance(obj, dict):
-        return DMPlan(narrative=fallback_narrative or cleaned[:300] or "……", triggers=["parse_fallback"])
-    narrative = str(obj.get("narrative") or cleaned).strip()[:600]
+        return DMPlan(narrative=narrative_override or fallback_narrative or cleaned[:300] or "……", triggers=["parse_fallback"])
+    narrative = str(obj.get("narrative") or narrative_override or cleaned).strip()[:600]
     if not narrative:
         narrative = fallback_narrative or "……"
 
@@ -114,16 +158,41 @@ def parse_dm_plan(raw: str, fallback_narrative: str = "") -> DMPlan:
             )
     gold = obj.get("gold") if isinstance(obj.get("gold"), int) else 0
     hp = obj.get("hp") if isinstance(obj.get("hp"), int) else 0
+    xp = obj.get("xp") if isinstance(obj.get("xp"), int) else 0
     triggers = obj.get("triggers") if isinstance(obj.get("triggers"), list) else []
+
+    attack: AttackProposal | None = None
+    atk = obj.get("attack")
+    if isinstance(atk, dict):
+        attack = AttackProposal(
+            target=str(atk.get("target", "")).strip()[:24],
+            ac=int(atk["ac"]) if isinstance(atk.get("ac"), int) else None,
+            weapon=str(atk.get("weapon", "")).strip()[:24],
+            damage=str(atk.get("damage", "")).strip()[:24],
+            ability=str(atk.get("ability", "")).strip() or None,
+            reason=str(atk.get("reason", "")).strip()[:120],
+        )
+
+    combat = obj.get("combat")
+    if not isinstance(combat, dict) or not combat.get("name"):
+        combat = None
+
+    quest_done = obj.get("quest_done")
+    if quest_done is not None:
+        quest_done = str(quest_done).strip() or None
 
     return DMPlan(
         narrative=narrative,
         check=check,
+        attack=attack,
+        combat=combat,
         advance_scene=advance,
+        quest_done=quest_done,
         triggers=[str(t) for t in triggers],
         loot=loot,
         gold=gold,
         hp=hp,
+        xp=xp,
     )
 
 
@@ -136,6 +205,7 @@ class DeepSeekLLMProvider(BaseLLMProvider):
         self.temperature = config.LLM_TEMPERATURE
         self.max_tokens = config.LLM_MAX_TOKENS
         self.timeout = config.LLM_TIMEOUT
+        self.retries = config.LLM_RETRIES
         self._fallback = MockLLMProvider()
 
     def _call_chat(self, messages: list) -> str:
@@ -153,12 +223,81 @@ class DeepSeekLLMProvider(BaseLLMProvider):
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
 
+
+    async def _stream_chat_async(self, messages: list):
+        """OpenAI 兼容实时流（异步逐块产出 deltas；独立方法便于单测注入替身流）。"""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "response_format": {"type": "json_object"},
+            "stream": True,
+        }
+        headers = {"Authorization": f"Bearer {config.DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        async with (
+            httpx.AsyncClient(timeout=self.timeout) as client,
+            client.stream("POST", self.url, json=payload, headers=headers) as resp,
+        ):
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    content = chunk["choices"][0]["delta"].get("content") or ""
+                except Exception:
+                    continue
+                if content:
+                    yield content
+
+    async def plan_stream(self, session: GameSession, player_text: str):
+        """流式 DM 决策：SSE 边到边转发——narrative 每来一个 token 立刻交给 main 推给前端。
+
+        产出约定（main 消费）：
+        - ("token", str)：narrative 的增量文本，应立刻 SSE 推给前端；
+        - ("plan", DMPlan)：全部决策（叙述/检定/推进/记账），在流结束后产出一次。
+        失败时同样以 ("plan", 兜底 DMPlan) 终止，主流程永不中断。
+        """
+        try:
+            ctx = memory.build_context(session)
+            ctx.append({"role": "user", "content": player_text[: config.MAX_INPUT_LENGTH]})
+            buffer = ""
+            slice_text = ""
+            last_len = 0
+            async for delta in self._stream_chat_async(ctx):
+                buffer += delta
+                slice_text = _narrative_stream_slice(buffer)
+                if len(slice_text) > last_len:
+                    yield ("token", slice_text[last_len:])
+                    last_len = len(slice_text)
+            plan = parse_dm_plan(
+                buffer,
+                fallback_narrative=slice_text or "……",
+                narrative_override=slice_text or "",
+            )
+            yield ("plan", plan)
+        except Exception:
+            yield ("plan", self._fallback.plan(session, player_text))
+
     async def plan(self, session: GameSession, player_text: str) -> DMPlan:
         try:
             ctx = memory.build_context(session)
             ctx.append({"role": "user", "content": player_text[: config.MAX_INPUT_LENGTH]})
-            raw = await asyncio.to_thread(self._call_chat, ctx)
-            return parse_dm_plan(raw, fallback_narrative=player_text and "……")
+            last: Exception | None = None
+            for _ in range(max(1, self.retries)):
+                try:
+                    raw = await asyncio.to_thread(self._call_chat, ctx)
+                    return parse_dm_plan(raw, fallback_narrative=player_text and "……")
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    last = exc
+                    continue
+            raise last
         except Exception:
             return self._fallback.plan(session, player_text)
 
@@ -181,14 +320,12 @@ def _can_advance(session: GameSession, target: str) -> bool:
 
 
 def _apply_assets(session: GameSession, plan: DMPlan) -> None:
-    """把 DM 声明的 loot/gold/hp 自动记账到角色卡（装备、附魔、金币、生命永久记录）。"""
+    """把 DM 声明的 loot/gold/hp/xp 自动记账到角色卡（装备、附魔、金币、生命、经验永久记录）。"""
+    from .gameplay import _add_item, _award_xp, complete_quest
+
     c = session.state.player
     for it in plan.loot:
-        found = next((x for x in c.inventory if x.name == it.name), None)
-        if found:
-            found.qty += it.qty
-        else:
-            c.inventory.append(it)
+        _add_item(session, it)
         tag = f"附魔:{it.effect}" if it.effect else f"×{it.qty}"
         session.state.events.append(f"获得物品【{it.name}】{tag}")
     if plan.gold:
@@ -197,20 +334,47 @@ def _apply_assets(session: GameSession, plan: DMPlan) -> None:
     if plan.hp:
         c.hp = min(c.max_hp, max(0, c.hp + plan.hp))
         session.state.events.append(f"HP {plan.hp:+d} → {c.hp}/{c.max_hp}")
+    if plan.xp:
+        _award_xp(session, plan.xp, "奖励")
+    if plan.quest_done:
+        for q in session.state.quests:
+            if q.id == plan.quest_done:
+                complete_quest(session, q)
+                break
 
 
-async def propose_or_resolve(session: GameSession, player_text: str) -> dict:
-    """完整决策流：DM 实时叙述 + 是否建议检定 + 数值裁决 + 大分支推进 + 自动记账。"""
-    from .gameplay import advance_scene, run_check
+def combat_summary(combat: dict | None) -> dict | None:
+    if not combat:
+        return None
+    return {
+        "name": combat.get("name", ""),
+        "hp": int(combat.get("hp", 0)),
+        "max_hp": int(combat.get("max_hp", 0)),
+        "ac": int(combat.get("ac", 0)),
+        "killed": bool(combat.get("killed")),
+    }
 
-    provider = get_llm_provider()
-    result_plan = provider.plan(session, player_text)
-    plan = await result_plan if inspect.isawaitable(result_plan) else result_plan
+
+async def propose_or_resolve(session: GameSession, player_text: str, plan: DMPlan | None = None) -> dict:
+    """完整决策流：DM 实时叙述 + 是否建议检定 + 攻击裁决 + 大分支推进 + 记账。
+
+    plan 可由调用方预传入（如流式路径：叙述已按 token 转发，规划已解析完成），
+    缺省则由 get_llm_provider().plan() 实时请求补足（旧版/兜底路径复用）。
+    """
+    from .gameplay import advance_scene, open_combat, resolve_attack, run_check
+
+    if plan is None:
+        provider = get_llm_provider()
+        result_plan = provider.plan(session, player_text)
+        plan = await result_plan if inspect.isawaitable(result_plan) else result_plan
     result: dict = {
         "dm_text": plan.narrative,
         "check": None,
         "advanced": False,
         "advance_dm_text": "",
+        "combat": None,
+        "attack_result": None,
+        "quest_msg": "",
         "triggers": list(plan.triggers),
     }
 
@@ -226,7 +390,20 @@ async def propose_or_resolve(session: GameSession, player_text: str) -> dict:
         text = plan.check.ability or plan.check.skill or "感知"
         result["check"] = run_check(session, text, dc_override=plan.check.dc)
 
+    if plan.combat and (session.state.combat is None or session.state.combat.get("killed")):
+        open_combat(session, plan.combat)
+        result["combat"] = combat_summary(session.state.combat)
+
+    if plan.attack and session.state.combat and not session.state.combat.get("killed"):
+        res = resolve_attack(session, plan.attack)
+        result["attack_result"] = res
+        if res is None:
+            result["attack_result"] = None
+
     _apply_assets(session, plan)
+    if plan.quest_done and any(q.id == plan.quest_done and q.status == "done" for q in session.state.quests):
+        q = next(q for q in session.state.quests if q.id == plan.quest_done)
+        result["quest_msg"] = f"任务完成!《{q.title}》奖励 +{q.reward_xp} XP、{q.reward_gp} gp。"
     return result
 
 

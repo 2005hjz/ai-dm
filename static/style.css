@@ -428,6 +428,16 @@ body {
   font-size: 11.5px;
 }
 
+/* 已走过的分支节点:当前节点金色高亮,其余已走过场景次高亮,可一眼看出剧情轨迹 */
+.branch-node.visited {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.branch-edge.traveled {
+  border-left-color: var(--accent);
+  color: var(--accent);
+}
+
 .mini-btn {
   background: #0b0e1a;
   border: 1px solid var(--line);
@@ -688,4 +698,130 @@ body {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* ---------- 本地存档 ---------- */
+.save-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.save-bar input {
+  flex: 1;
+  min-width: 0;
+  background: #0b0e1a;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.save-bar input:focus {
+  border-color: var(--accent);
+}
+
+.save-bar .save-now {
+  background: linear-gradient(135deg, var(--gold), #f59e0b);
+  border: none;
+  color: #211a05;
+  font-weight: 700;
+}
+
+.save-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.file-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.file-btn input[type="file"] {
+  position: absolute;
+  left: -120px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.saved-session {
+  background: #0e1324;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 10px;
+  margin-bottom: 7px;
+}
+
+.saved-session.current {
+  border-color: var(--gold);
+  background: #221d0a;
+}
+
+/* 本地存档折叠:标题一行常显,详情/操作点击才展开 */
+.saved-details summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  user-select: none;
+}
+.saved-details summary::-webkit-details-marker {
+  display: none;
+}
+.saved-details summary::before {
+  content: "▸";
+  color: var(--dim);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+.saved-details[open] summary::before {
+  transform: rotate(90deg);
+}
+.saved-details .saved-meta {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.saved-session.current .saved-name {
+  color: var(--gold);
+}
+.saved-details .saved-session-body {
+  margin-top: 7px;
+}
+.saved-details .saved-sub {
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-bottom: 7px;
+  line-height: 1.5;
+}
+.saved-details .saved-acts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 旧存档完全隐藏(连标题也不显示),点「展开全部存档」后才露出 */
+.saved-session.hidden {
+  display: none;
+}
+#saved-session-list.show-all .saved-session.hidden,
+.saved-session-list.show-all .saved-session.hidden {
+  display: block;
+}
+
+.saved-toggle {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  text-align: center;
+  padding: 4px 0;
 }
